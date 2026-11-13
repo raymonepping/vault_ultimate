@@ -1,0 +1,177 @@
+# compose/workload/compose.yaml: Tidewell's own workload (D15). It does not
+# know it is in a demo. The app and the agent are separate systems: each gets
+# its own volume of before-estate files.
+#
+#   booking-init  one-shot: copies the before estate's files (booking.env, the
+#                 year-long certificate and key) from .secrets/workload onto
+#                 a volume owned by the app's uid 1000, in place, so the app
+#                 sees each change without a restart (ansible before-estate
+#                 and stage-reset run it again)
+#   booking       the booking app on a fixed address (the AppRole is bound to
+#                 its /32 from act 2), HTTPS on 14202
+#   tide-agent    the AI agent: Ollama for language, the booking API for
+#                 actions; not published
+
+services:
+  booking-init:
+    image: ${ALPINE_IMAGE}
+    container_name: vult-booking_init
+    user: "0:0"
+    network_mode: none
+    # make stage-reset sets VULT_CLEAR_AGENT_OUT=1: Vault Agent's renders go,
+    # so the app falls back to the before estate's files (D17).
+    environment:
+      CLEAR_AGENT_OUT: ${VULT_CLEAR_AGENT_OUT:-0}
+    entrypoint:
+      - /bin/sh
+      - -c
+      - >-
+        umask 077 && mkdir -p /estate/tls &&
+        if [ -f /src/booking.env ]; then cat /src/booking.env >/estate/booking.env; else : >/estate/booking.env; fi &&
+        if [ -f /src/tide-agent.env ]; then cat /src/tide-agent.env >/agent/tide-agent.env; else : >/agent/tide-agent.env; fi &&
+        for f in cert.pem key.pem; do if [ -f /src/tls/$$f ]; then cat /src/tls/$$f >/estate/tls/$$f; fi; done &&
+        if [ "$$CLEAR_AGENT_OUT" = 1 ]; then rm -f /out/db.json /out/deploy.json /out/tls/cert.pem /out/tls/key.pem; fi &&
+        chown -R 1000:1000 /estate /agent && chmod -R go-rwx /estate /agent &&
+        echo '[booking-init] done'
+    volumes:
+      - ../../.secrets/workload:/src:ro
+      - booking-estate:/estate
+      - agent-estate:/agent
+      - booking-out:/out
+    restart: "no"
+
+  booking:
+    image: ${VULT_IMAGE_PREFIX}/booking:${VULT_IMAGE_TAG}
+    container_name: vult-booking
+    hostname: booking
+    environment:
+      BOOKING_PUBLIC_URL: "https://localhost:${VULT_PORT_BOOKING}"
+      KEYCLOAK_PUBLIC: "https://localhost:${VULT_PORT_KEYCLOAK}/realms/tidewell"
+      KEYCLOAK_INTERNAL: "https://keycloak:8443/realms/tidewell"
+      BOOKING_ENV_FILE: /run/booking/booking.env
+      PG_CA_FILE: /etc/booking/ca-chain.pem
+      NODE_EXTRA_CA_CERTS: /etc/booking/ca-chain.pem
+      VAULT_ADDR: https://vault-1:8200
+      VAULT_NAMESPACE: tidewell
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    tmpfs: [/tmp]
+    volumes:
+      - booking-estate:/run/booking:ro
+      - booking-out:/vault/out:ro
+      - ../../vault-tls/ca-chain.pem:/etc/booking/ca-chain.pem:ro
+    ports: ["127.0.0.1:${VULT_PORT_BOOKING}:8443"]
+    networks:
+      default:
+        ipv4_address: ${VULT_BOOKING_IP}
+        aliases: [booking]
+    mem_limit: 256m
+    restart: unless-stopped
+    depends_on:
+      booking-init:
+        condition: service_completed_successfully
+
+  # Act 2 on (profile act2): the role id and the wrapped secret id onto the
+  # Agent's input volume, owned by the uid Agent runs as.
+  agent-init:
+    image: ${ALPINE_IMAGE}
+    container_name: vult-agent_init
+    profiles: ["act2"]
+    user: "0:0"
+    network_mode: none
+    # The wave sets VULT_AGENT_ACT: tls.hcl joins agent.hcl from act 3.
+    environment:
+      AGENT_ACT: ${VULT_AGENT_ACT:-2}
+    entrypoint:
+      - /bin/sh
+      - -c
+      - >-
+        umask 077 && mkdir -p /in/config && rm -f /in/config/agent.hcl /in/config/tls.hcl &&
+        cat /src/role-id >/in/role-id && cat /src/wrapped-secret-id >/in/wrapped-secret-id &&
+        cp /cfg/agent.hcl /in/config/ &&
+        if [ "$$AGENT_ACT" -ge 3 ]; then cp /cfg/tls.hcl /in/config/; fi &&
+        chown -R 1000:1000 /in /out && chmod -R go-rwx /in /out &&
+        echo "[agent-init] done (act $$AGENT_ACT)"
+    volumes:
+      - ../../.secrets/workload/approle:/src:ro
+      - ./agent:/cfg:ro
+      - booking-agent-in:/in
+      - booking-out:/out
+    restart: "no"
+
+  booking-agent:
+    image: ${VAULT_ENT_IMAGE}
+    container_name: vult-booking_agent
+    profiles: ["act2"]
+    # The booking container's network namespace: Vault sees 10.89.28.70.
+    network_mode: "service:booking"
+    user: "1000:1000"
+    entrypoint: ["vault", "agent", "-config=/vault/in/config"]
+    environment:
+      HOME: /tmp
+      VAULT_NAMESPACE: tidewell
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /vault/sink:U,mode=0700
+    volumes:
+      - ../../vault-tls/ca-chain.pem:/vault/ca/ca-chain.pem:ro
+      - booking-agent-in:/vault/in:ro
+      - booking-out:/vault/out
+    mem_limit: 128m
+    restart: unless-stopped
+    depends_on:
+      agent-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "test -s /vault/sink/token && test -s /vault/out/db.json"]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+      start_period: 5s
+
+  tide-agent:
+    image: ${VULT_IMAGE_PREFIX}/tide-agent:${VULT_IMAGE_TAG}
+    container_name: vult-tide_agent
+    hostname: tide-agent
+    environment:
+      BOOKING_URL: https://booking:8443
+      OLLAMA_URL: http://ollama:11434
+      OLLAMA_MODEL: ${VULT_OLLAMA_MODEL}
+      OLLAMA_TIMEOUT_MS: ${VULT_OLLAMA_TIMEOUT_MS}
+      AGENT_ENV_FILE: /run/agent/tide-agent.env
+      NODE_EXTRA_CA_CERTS: /etc/booking/ca-chain.pem
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    tmpfs: [/tmp]
+    volumes:
+      - agent-estate:/run/agent:ro
+      - ../../vault-tls/ca-chain.pem:/etc/booking/ca-chain.pem:ro
+    networks:
+      default:
+        aliases: [tide-agent]
+    mem_limit: 192m
+    restart: unless-stopped
+    depends_on:
+      booking-init:
+        condition: service_completed_successfully
+
+networks:
+  default:
+    name: vult-internal
+    external: true
+
+volumes:
+  booking-estate:
+    name: vult-booking_estate
+  agent-estate:
+    name: vult-agent_estate
+  # What Vault Agent renders for the app (act 2 on): written by Agent only.
+  booking-out:
+    name: vult-booking_out
+  booking-agent-in:
+    name: vult-booking_agent_in

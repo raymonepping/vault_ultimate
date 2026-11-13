@@ -1,0 +1,85 @@
+# act-3 (ansible, make act-3): the booking site's certificate lives an hour.
+#
+#   1. Vault Agent gets the certificate template (compose/workload/agent/
+#      tls.hcl) and a fresh secret zero (role booking_agent, act 3): it issues
+#      a one-hour certificate from pki/issue/booking and renews it before the
+#      end; the app swaps its TLS context without a restart
+#   2. only once the site serves the new certificate: the year-long one is
+#      revoked, so OCSP answers "revoked" for it (probe Q4)
+# Skips step 1 when the site already serves Agent's certificate, and step 2
+# when Vault already records the revocation.
+- name: Act 3, certificates
+  hosts: localhost
+  gather_facts: false
+  vars:
+    v_ns: "{{ vult_cluster_addr }}/v1/{{ vult_namespace }}"
+    v_token: "{{ lookup('ansible.builtin.file', vult_tokens_dir + '/ansible-platform') }}"
+    w: "{{ vult_root }}/.secrets/workload"
+  tasks:
+    - name: Which certificate does the site serve?
+      ansible.builtin.uri:
+        url: "{{ vult_booking_url }}/healthz"
+        ca_path: "{{ vult_ca }}"
+        status_code: [200, 503]
+      register: health
+      check_mode: false
+
+    - name: Agent issues the one-hour certificate
+      ansible.builtin.include_role:
+        name: booking_agent
+      vars:
+        booking_agent_ns: "{{ v_ns }}"
+        booking_agent_token: "{{ v_token }}"
+        booking_agent_act: 3
+      when: health.json.tls | default('') != 'vault-agent'
+
+    - name: The site serves Agent's certificate
+      ansible.builtin.uri:
+        url: "{{ vult_booking_url }}/healthz"
+        ca_path: "{{ vult_ca }}"
+      register: served
+      until: served.json.tls | default('') == 'vault-agent'
+      retries: 15
+      delay: 2
+      check_mode: false
+
+    - name: Its notAfter is within the certificate TTL
+      ansible.builtin.shell: |
+        set -euo pipefail
+        end=$(openssl s_client -connect localhost:{{ vult_booking_url | urlsplit('port') }} -servername booking -CAfile "{{ vult_ca }}" </dev/null 2>/dev/null |
+          openssl x509 -noout -enddate | cut -d= -f2)
+        left=$(( $(date -j -u -f '%b %e %T %Y %Z' "$end" +%s) - $(date -u +%s) ))
+        echo "$left"
+        [ "$left" -gt 0 ] && [ "$left" -le {{ (vult_ttl.cert | regex_replace('h$', '') | int) * 3600 + 60 }} ]
+      args: { executable: /bin/bash }
+      register: not_after
+      changed_when: false
+      check_mode: false
+
+    - name: The year-long certificate's serial
+      ansible.builtin.shell: |
+        set -euo pipefail
+        openssl x509 -in "{{ w }}/tls/cert.pem" -noout -serial | cut -d= -f2 | sed 's/../&:/g; s/:$//' | tr 'A-F' 'a-f'
+      args: { executable: /bin/bash }
+      register: year_serial
+      changed_when: false
+      check_mode: false
+
+    - name: Vault's record of it
+      ansible.builtin.uri:
+        url: "{{ v_ns }}/pki/cert/{{ year_serial.stdout }}"
+        ca_path: "{{ vult_ca }}"
+        headers: { X-Vault-Token: "{{ v_token }}" }
+      register: year_cert
+      check_mode: false
+
+    - name: Revoke the year-long certificate
+      ansible.builtin.uri:
+        url: "{{ v_ns }}/pki/revoke"
+        method: POST
+        ca_path: "{{ vult_ca }}"
+        headers: { X-Vault-Token: "{{ v_token }}" }
+        body_format: json
+        body: { serial_number: "{{ year_serial.stdout }}" }
+      when: (year_cert.json.data.revocation_time | default(0)) == 0
+      changed_when: true

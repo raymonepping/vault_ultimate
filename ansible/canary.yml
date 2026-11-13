@@ -1,0 +1,56 @@
+# Phase canary (ansible): act 0's support note (D5, reframed). Teun, a
+# booking clerk, signs in for real (Keycloak, the lab-only tidewell-cli
+# client) and posts a note that says the app still runs on the old static
+# database password. The note holds no credential.
+# Only at act 0 (or with VULT_RESET=1), and only when the note is not there.
+- name: The act 0 support note
+  hosts: localhost
+  gather_facts: false
+  vars:
+    story: "{{ lookup('ansible.builtin.file', vult_root + '/config/story.json') | from_json }}"
+    act_now: "{{ lookup('ansible.builtin.pipe', 'cat ' + vult_root + '/.build/act 2>/dev/null || echo 0') | trim }}"
+    reset: "{{ lookup('ansible.builtin.env', 'VULT_RESET') == '1' }}"
+    marker: "{{ story.notes.act0[:40] }}"
+  tasks:
+    - name: Act 0 only
+      when: act_now == '0' or reset
+      block:
+        - name: Teun signs in (Keycloak, through the LDAP federation)
+          ansible.builtin.uri:
+            url: "{{ vult_keycloak_url }}/realms/tidewell/protocol/openid-connect/token"
+            method: POST
+            ca_path: "{{ vult_ca }}"
+            body_format: form-urlencoded
+            body:
+              grant_type: password
+              client_id: tidewell-cli
+              username: "{{ story.clerk.user }}"
+              password: "{{ lookup('ansible.builtin.file', vult_root + '/.secrets/people/' + story.clerk.user) | trim }}"
+          register: teun
+          no_log: true
+          check_mode: false
+
+        - name: The notes Teun can see
+          ansible.builtin.uri:
+            url: "{{ vult_booking_url }}/api/notes"
+            ca_path: "{{ vult_ca }}"
+            headers: { Authorization: "Bearer {{ teun.json.access_token }}" }
+          register: notes
+          no_log: true
+          check_mode: false
+
+        - name: Teun posts the act 0 note (no credential in it)
+          ansible.builtin.uri:
+            url: "{{ vult_booking_url }}/api/notes"
+            method: POST
+            ca_path: "{{ vult_ca }}"
+            headers: { Authorization: "Bearer {{ teun.json.access_token }}" }
+            body_format: json
+            body:
+              body: "{{ story.notes.act0 }}"
+            status_code: [201]
+          when: >-
+            notes.json.notes | selectattr('author', 'equalto', story.clerk.user)
+            | selectattr('body', 'search', marker | regex_escape) | list | length == 0
+          changed_when: true
+          no_log: true

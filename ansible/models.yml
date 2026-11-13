@@ -1,0 +1,31 @@
+# Phase models (ansible): the Ollama models the lab declares
+# (config/defaults.conf: VULT_OLLAMA_MODEL and VULT_OLLAMA_CANDIDATES), pulled
+# inside vult-ollama only when missing (D8). Ollama is internal only, so the
+# play asks it through podman exec rather than a published port.
+- name: Ollama models
+  hosts: localhost
+  gather_facts: false
+  vars:
+    wanted: "{{ ([vult_ollama.model] + vult_ollama.candidates) | unique }}"
+  tasks:
+    - name: List the models already in vult-ollama_models
+      ansible.builtin.command: podman exec vult-ollama ollama list
+      register: listed
+      changed_when: false
+      check_mode: false
+
+    - name: Pull each missing model
+      ansible.builtin.command: "podman exec vult-ollama ollama pull {{ item }}"
+      loop: "{{ wanted }}"
+      when: >-
+        (listed.stdout_lines[1:] | map('split') | map('first') | list
+         | select('equalto', item if ':' in item else item ~ ':latest') | list | length) == 0
+      changed_when: true
+
+    - name: Confirm every model is present
+      ansible.builtin.command: podman exec vult-ollama ollama list
+      register: after
+      changed_when: false
+      check_mode: false
+      failed_when: >-
+        (wanted | reject('in', after.stdout_lines[1:] | map('split') | map('first') | list) | list | length) > 0

@@ -1,0 +1,8 @@
+# Phase 9 (ansible people): Saskia's userpass user in tidewell with the
+# vult-presenter policy, her password in .secrets/people/saskia (0600), with
+# the ansible-platform token (D13).
+- name: The presenter
+  hosts: localhost
+  gather_facts: false
+  roles:
+    - people

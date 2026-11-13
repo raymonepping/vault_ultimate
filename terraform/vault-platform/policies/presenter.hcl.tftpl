@@ -1,0 +1,37 @@
+# vult-presenter: Saskia, the platform engineer (D14). Her own session token
+# (jwt login through Keycloak, group platform) runs every act through the
+# console API, so the audit log names her. Paths are relative to namespace
+# tidewell.
+
+# Act 1: Secrets Import writes kv/ops/* (metadata first, so create there too).
+path "kv/data/ops/*" { capabilities = ["create", "update"] }
+path "kv/metadata/ops/*" { capabilities = ["create", "read", "list", "update"] }
+path "kv/metadata/ops" { capabilities = ["list"] }
+path "kv/metadata/" { capabilities = ["list"] }
+
+# Act 1 and act 6: the deploy token. Vault refuses associations/set unless
+# the caller may read the secret (vault_sync, measured), and act 6 rotates it.
+path "kv/data/${sync_secret}" { capabilities = ["create", "update", "read"] }
+path "kv/metadata/${sync_secret}" { capabilities = ["read"] }
+
+# The two destinations, their associations and status.
+path "sys/sync/destinations" { capabilities = ["read", "list"] }
+path "sys/sync/destinations/gh/tidewell-github" { capabilities = ["read"] }
+path "sys/sync/destinations/aws-sm/tidewell-localstack" { capabilities = ["read"] }
+path "sys/sync/destinations/gh/tidewell-github/associations" { capabilities = ["read"] }
+path "sys/sync/destinations/aws-sm/tidewell-localstack/associations" { capabilities = ["read"] }
+path "sys/sync/destinations/gh/tidewell-github/associations/*" { capabilities = ["update"] }
+path "sys/sync/destinations/aws-sm/tidewell-localstack/associations/*" { capabilities = ["update"] }
+path "sys/sync/associations" { capabilities = ["read", "list"] }
+path "sys/sync/associations/*" { capabilities = ["read"] }
+
+# Act 6: look up and revoke one of the booking app's database leases by its
+# id (the path form scopes it to that role's leases only).
+path "sys/leases/lookup" { capabilities = ["update"] }
+path "sys/leases/revoke/database/creds/booking/*" { capabilities = ["update"] }
+
+# Never: another value, a destination's credentials, the app's identity.
+path "kv/data/*" { capabilities = ["deny"] }
+path "sys/sync/github-apps/*" { capabilities = ["deny"] }
+path "auth/approle/*" { capabilities = ["deny"] }
+path "database/creds/*" { capabilities = ["deny"] }

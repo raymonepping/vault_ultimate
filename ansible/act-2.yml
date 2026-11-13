@@ -1,0 +1,116 @@
+# act-2 (ansible, make act-2): the app proves who it is and gets a lease.
+#
+#   1. Vault's connection to PostgreSQL (it carries the admin password; TLS
+#      verify-full), allowed role booking only
+#   2. the AppRole role id and a response-wrapped, single-use secret id
+#      handed to the booking app's Vault Agent (role booking_agent), which
+#      unwraps it, logs in once and renders the lease (D9)
+#   3. the app follows db.json (lib/creds.js): its health says vault-agent
+#   4. only then: booking_app loses LOGIN and its password, its sessions end,
+#      and booking.env no longer holds a database password
+# Skips step 2 when Agent is healthy and the app already runs on its lease.
+- name: Act 2, the app
+  hosts: localhost
+  gather_facts: false
+  vars:
+    v_ns: "{{ vult_cluster_addr }}/v1/{{ vult_namespace }}"
+    v_token: "{{ lookup('ansible.builtin.file', vult_tokens_dir + '/ansible-platform') }}"
+    w: "{{ vult_root }}/.secrets/workload"
+    psql: podman exec -i vult-postgres gosu postgres psql -v ON_ERROR_STOP=1 -q -d tidewell
+  tasks:
+    - name: Read Vault's connection to PostgreSQL
+      ansible.builtin.uri:
+        url: "{{ v_ns }}/database/config/tidewell"
+        ca_path: "{{ vult_ca }}"
+        headers: { X-Vault-Token: "{{ v_token }}" }
+        status_code: [200, 404]
+      register: dbconf
+      check_mode: false
+
+    - name: Connect Vault to PostgreSQL (verify-full against the lab CA)
+      ansible.builtin.uri:
+        url: "{{ v_ns }}/database/config/tidewell"
+        method: POST
+        ca_path: "{{ vult_ca }}"
+        headers: { X-Vault-Token: "{{ v_token }}" }
+        body_format: json
+        body:
+          plugin_name: postgresql-database-plugin
+          connection_url: "postgresql://{{ '{{' }}username{{ '}}' }}:{{ '{{' }}password{{ '}}' }}@postgres:5432/tidewell?sslmode=verify-full&sslrootcert=/vault/config/tls/ca-chain.pem"
+          username: postgres
+          password: "{{ lookup('ansible.builtin.file', vult_root + '/.secrets/data/pg-bootstrap') | trim }}"
+          allowed_roles: [booking]
+          verify_connection: true
+        status_code: [200, 204]
+      when: dbconf.status == 404
+      changed_when: true
+      no_log: true
+
+    - name: Is the app already on Vault Agent's lease?
+      ansible.builtin.uri:
+        url: "{{ vult_booking_url }}/healthz"
+        ca_path: "{{ vult_ca }}"
+        status_code: [200, 503]
+      register: health
+      check_mode: false
+
+    - name: Is Agent healthy?
+      ansible.builtin.command: podman inspect vult-booking_agent --format '{{ '{{' }}.State.Health.Status{{ '}}' }}'
+      register: agent_state
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Deliver the secret zero and start Agent
+      ansible.builtin.include_role:
+        name: booking_agent
+      vars:
+        booking_agent_ns: "{{ v_ns }}"
+        booking_agent_token: "{{ v_token }}"
+        booking_agent_act: 2
+      when: agent_state.stdout != 'healthy' or health.json.credential | default('') != 'vault-agent'
+
+    - name: Retire the static role (NOLOGIN, no password, its sessions ended)
+      ansible.builtin.command: "{{ psql }}"
+      args:
+        stdin: |
+          DO $$
+          BEGIN
+            IF (SELECT rolcanlogin OR rolpassword IS NOT NULL FROM pg_authid WHERE rolname = 'booking_app') THEN
+              ALTER ROLE booking_app NOLOGIN PASSWORD NULL;
+              PERFORM pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename = 'booking_app';
+              RAISE NOTICE 'VULT_CHANGED booking_app retired';
+            END IF;
+          END $$;
+      register: retired
+      changed_when: "'VULT_CHANGED' in retired.stderr"
+
+    - name: booking.env no longer holds a database credential
+      ansible.builtin.lineinfile:
+        path: "{{ w }}/booking.env"
+        regexp: '^DB_(USER|PASSWORD)='
+        state: absent
+      register: envfile
+      no_log: true
+
+    - name: The app's copy of booking.env follows (booking-init, in place)
+      ansible.builtin.shell: |
+        set -euo pipefail
+        c="{{ vult_root }}/scripts/compose.sh workload"
+        $c up -d --force-recreate --no-deps booking-init
+        rc=$(podman wait vult-booking_init)
+        [ "$rc" = 0 ] || { podman logs vult-booking_init >&2; exit 1; }
+        $c rm -f booking-init >/dev/null
+      args: { executable: /bin/bash }
+      when: envfile.changed
+      changed_when: true
+
+    - name: Bookings still work on the lease
+      ansible.builtin.uri:
+        url: "{{ vult_booking_url }}/healthz"
+        ca_path: "{{ vult_ca }}"
+      register: after
+      until: after.json.database | default('') == 'up' and after.json.credential | default('') == 'vault-agent'
+      retries: 15
+      delay: 2
+      check_mode: false

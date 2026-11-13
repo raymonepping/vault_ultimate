@@ -1,0 +1,202 @@
+# Phase before-estate (ansible): Tidewell's estate as everyone has it (act 0).
+# Runs only while .build/act is 0 (make lab after act 2 must not bring the
+# static password back); make stage-reset runs it with VULT_RESET=1 to put
+# every piece back on purpose (D17). Idempotent: a second run changes nothing.
+#
+#   the database   schema, the synthetic manifest, booking_app with a static
+#                  password VALID UNTIL infinity (a member of booking_rw)
+#   booking.env    DB_USER/DB_PASSWORD, OIDC_CLIENT_SECRET, DEPLOY_TOKEN,
+#                  AGENT_API_KEY; tide-agent.env with the agent's key
+#   TLS            a year-long certificate from Vault PKI (role booking-year)
+#   copies         the legacy secrets and a hand-made deploy-token copy in
+#                  LocalStack; the deploy token pasted into GitHub by hand
+# No value is printed: every task that touches one is no_log.
+- name: The before estate
+  hosts: localhost
+  gather_facts: false
+  vars:
+    v_ns: "{{ vult_cluster_addr }}/v1/{{ vult_namespace }}"
+    v_token: "{{ lookup('ansible.builtin.file', vult_tokens_dir + '/ansible-platform') }}"
+    w: "{{ vult_root }}/.secrets/workload"
+    story: "{{ lookup('ansible.builtin.file', vult_root + '/config/story.json') | from_json }}"
+    act_now: "{{ lookup('ansible.builtin.pipe', 'cat ' + vult_root + '/.build/act 2>/dev/null || echo 0') | trim }}"
+    reset: "{{ lookup('ansible.builtin.env', 'VULT_RESET') == '1' }}"
+    psql: podman exec -i vult-postgres gosu postgres psql -v ON_ERROR_STOP=1 -q -d tidewell
+    ls_headers:
+      Content-Type: application/x-amz-json-1.1
+      Authorization: >-
+        AWS4-HMAC-SHA256 Credential=test/20260101/{{ vult_localstack.region }}/secretsmanager/aws4_request,
+        SignedHeaders=host, Signature=0
+  tasks:
+    - name: Not act 0
+      ansible.builtin.debug:
+        msg: "act {{ act_now }}: the before estate is left alone (make stage-reset CONFIRM=yes brings it back)"
+      when: act_now != '0' and not reset
+
+    - name: Act 0
+      when: act_now == '0' or reset
+      block:
+        - name: The workload's own secrets (create-only)
+          ansible.builtin.command: "{{ vult_root }}/scripts/workload-secrets.sh"
+          register: ws
+          changed_when: "'0 new' not in ws.stdout"
+
+        - name: The schema and booking_rw
+          ansible.builtin.shell: "{{ psql }} < {{ vult_root }}/workload/sql/schema.sql"
+          register: schema
+          changed_when: "'VULT_CHANGED' in schema.stderr"
+
+        - name: The synthetic schedule and manifest (when empty)
+          ansible.builtin.shell: "set -o pipefail; node {{ vult_root }}/scripts/manifest-sql.js | {{ psql }}"
+          args: { executable: /bin/bash }
+          register: manifest
+          changed_when: "'VULT_CHANGED' in manifest.stderr"
+
+        - name: booking_app, the static credential (VALID UNTIL infinity)
+          ansible.builtin.command: "{{ psql }}"
+          args:
+            stdin: |
+              DO $$
+              BEGIN
+                IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'booking_app') THEN
+                  CREATE ROLE booking_app LOGIN PASSWORD '{{ lookup('ansible.builtin.file', w + '/booking-db-password') }}' VALID UNTIL 'infinity' IN ROLE booking_rw;
+                  RAISE NOTICE 'VULT_CHANGED booking_app created';
+                ELSIF {{ 'true' if reset else 'false' }} OR NOT (SELECT rolcanlogin FROM pg_roles WHERE rolname = 'booking_app') THEN
+                  ALTER ROLE booking_app LOGIN PASSWORD '{{ lookup('ansible.builtin.file', w + '/booking-db-password') }}' VALID UNTIL 'infinity';
+                  GRANT booking_rw TO booking_app;
+                  RAISE NOTICE 'VULT_CHANGED booking_app restored';
+                END IF;
+              END $$;
+          register: role
+          changed_when: "'VULT_CHANGED' in role.stderr"
+          no_log: true
+
+        - name: booking.env and tide-agent.env (the before estate's .env files)
+          ansible.builtin.copy:
+            dest: "{{ item.dest }}"
+            mode: "0600"
+            content: "{{ item.content }}"
+          loop:
+            - dest: "{{ w }}/booking.env"
+              content: |
+                # Tidewell booking app (fictional). Everyone's .env: static, never rotated.
+                DB_USER=booking_app
+                DB_PASSWORD={{ lookup('ansible.builtin.file', w + '/booking-db-password') }}
+                OIDC_CLIENT_SECRET={{ lookup('ansible.builtin.file', vult_root + '/.secrets/identity/booking-client-secret') | trim }}
+                DEPLOY_TOKEN={{ lookup('ansible.builtin.file', w + '/deploy-token') }}
+                AGENT_API_KEY={{ lookup('ansible.builtin.file', w + '/agent-api-key') }}
+            - dest: "{{ w }}/tide-agent.env"
+              content: |
+                # tide-agent (fictional). A static key for the booking API.
+                AGENT_API_KEY={{ lookup('ansible.builtin.file', w + '/agent-api-key') }}
+          loop_control: { label: "{{ item.dest | basename }}" }
+          register: envfiles
+          no_log: true
+
+        - name: Is the year-long certificate present, current and not revoked?
+          ansible.builtin.shell: |
+            set -euo pipefail
+            c="{{ w }}/tls/cert.pem"
+            [ -s "$c" ] && [ -s "{{ w }}/tls/key.pem" ] || { echo missing; exit 0; }
+            openssl verify -CAfile "{{ vult_ca }}" -untrusted "$c" "$c" >/dev/null 2>&1 || { echo untrusted; exit 0; }
+            openssl x509 -in "$c" -noout -checkend 2592000 >/dev/null || { echo expiring; exit 0; }
+            openssl x509 -in "$c" -noout -serial | cut -d= -f2 | sed 's/../&:/g; s/:$//' | tr 'A-F' 'a-f'
+          args: { executable: /bin/bash }
+          register: cert_state
+          changed_when: false
+          check_mode: false
+
+        - name: Its revocation state in Vault
+          ansible.builtin.uri:
+            url: "{{ v_ns }}/pki/cert/{{ cert_state.stdout }}"
+            ca_path: "{{ vult_ca }}"
+            headers: { X-Vault-Token: "{{ v_token }}" }
+            status_code: [200, 404]
+          register: cert_vault
+          when: cert_state.stdout not in ['missing', 'untrusted', 'expiring']
+          check_mode: false
+
+        - name: Issue the booking site a certificate for a year (role booking-year)
+          when: >-
+            reset or cert_state.stdout in ['missing', 'untrusted', 'expiring'] or cert_vault.status != 200
+            or (cert_vault.json.data.revocation_time | default(0)) != 0
+          block:
+            - name: Vault issues it
+              ansible.builtin.uri:
+                url: "{{ v_ns }}/pki/issue/booking-year"
+                method: POST
+                ca_path: "{{ vult_ca }}"
+                headers: { X-Vault-Token: "{{ v_token }}" }
+                body_format: json
+                body: { common_name: booking, alt_names: localhost, ip_sans: "127.0.0.1,{{ vult_ips.booking }}", ttl: 8760h }
+              register: issued
+              no_log: true
+            - name: Write the certificate (leaf and issuing CA) and its key
+              ansible.builtin.copy:
+                dest: "{{ item.dest }}"
+                mode: "0600"
+                content: "{{ item.content }}"
+              loop:
+                - { dest: "{{ w }}/tls/cert.pem", content: "{{ issued.json.data.certificate }}\n{{ issued.json.data.issuing_ca }}\n" }
+                - { dest: "{{ w }}/tls/key.pem", content: "{{ issued.json.data.private_key }}\n" }
+              loop_control: { label: "{{ item.dest | basename }}" }
+              no_log: true
+
+        - name: The legacy secrets in LocalStack
+          ansible.builtin.include_role:
+            name: seed
+          vars:
+            seed_story: "{{ story }}"
+
+        - name: Does the hand-made deploy-token copy exist in LocalStack?
+          ansible.builtin.uri:
+            url: "{{ vult_localstack.url }}/"
+            ca_path: "{{ vult_ca }}"
+            method: POST
+            headers: "{{ ls_headers | combine({'X-Amz-Target': 'secretsmanager.DescribeSecret'}) }}"
+            body: "{{ {'SecretId': story.deploy.aws_name} | to_json }}"
+            status_code: [200, 400]
+          register: ls_copy
+          check_mode: false
+
+        - name: Paste the deploy token into LocalStack by hand
+          ansible.builtin.uri:
+            url: "{{ vult_localstack.url }}/"
+            ca_path: "{{ vult_ca }}"
+            method: POST
+            headers: "{{ ls_headers | combine({'X-Amz-Target': 'secretsmanager.CreateSecret'}) }}"
+            body: >-
+              {{ {'Name': story.deploy.aws_name, 'ClientRequestToken': story.deploy.aws_name | to_uuid,
+                  'SecretString': lookup('ansible.builtin.file', w + '/deploy-token'),
+                  'Description': 'Tidewell CI deploy token, pasted by hand (synthetic)'} | to_json }}
+            status_code: [200]
+          when: ls_copy.status == 400
+          changed_when: true
+          no_log: true
+
+        - name: Is the deploy token in GitHub?
+          ansible.builtin.command: "gh secret list -R {{ vult_github.owner }}/{{ vult_github.repo }} --json name"
+          register: gh_list
+          changed_when: false
+          check_mode: false
+
+        - name: Paste the deploy token into GitHub by hand (a synthetic value; public repository)
+          ansible.builtin.command: "gh secret set {{ story.deploy.github_name }} -R {{ vult_github.owner }}/{{ vult_github.repo }}"
+          args:
+            stdin: "{{ lookup('ansible.builtin.file', w + '/deploy-token') }}"
+          when: reset or story.deploy.github_name not in (gh_list.stdout | from_json | map(attribute='name') | list)
+          changed_when: true
+          no_log: true
+
+        - name: The lab is at act 0
+          ansible.builtin.copy:
+            dest: "{{ vult_root }}/.build/act"
+            content: "0\n"
+            mode: "0644"
+
+        - name: Hand the files to a running workload (in place)
+          ansible.builtin.command: "{{ vult_root }}/scripts/compose.sh workload run --rm --name vult-booking_init booking-init"
+          when: >-
+            (envfiles is changed or issued is defined and issued is not skipped)
+            and lookup('ansible.builtin.pipe', 'podman ps -q --filter name=^vult-booking$') != ''
+          changed_when: true

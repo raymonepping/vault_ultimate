@@ -1,0 +1,86 @@
+# booking_agent: deliver the booking app's secret zero and (re)start its
+# Vault Agent (D9). Used by act 2, act 3 (the certificate template joins) and
+# make wake-up (Agent lost its tmpfs token).
+#
+#   1. the role id and a response-wrapped secret id (wrap TTL VULT_WRAP_TTL,
+#      single use) into .secrets/workload/approle/ (0600)
+#   2. agent-init copies them and this act's Agent configuration onto the
+#      Agent's input volume; Agent starts in the booking container's network
+#      namespace, unwraps, logs in once and renders db.json (and the TLS pair)
+#   3. wait until Agent holds a token and the app runs on the lease
+# Every run is a new login on purpose: a used secret id never works again.
+# Inputs: booking_agent_ns, booking_agent_token, booking_agent_act.
+
+- name: Where the delivery goes
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0700"
+  loop: ["{{ vult_root }}/.secrets/workload/approle", "{{ vult_root }}/.build/agent"]
+
+- name: The AppRole role id
+  ansible.builtin.uri:
+    url: "{{ booking_agent_ns }}/auth/approle/role/booking/role-id"
+    ca_path: "{{ vult_ca }}"
+    headers: { X-Vault-Token: "{{ booking_agent_token }}" }
+  register: booking_agent_role
+  check_mode: false
+
+- name: A response-wrapped, single-use secret id
+  ansible.builtin.uri:
+    url: "{{ booking_agent_ns }}/auth/approle/role/booking/secret-id"
+    method: POST
+    ca_path: "{{ vult_ca }}"
+    headers:
+      X-Vault-Token: "{{ booking_agent_token }}"
+      X-Vault-Wrap-TTL: "{{ vult_ttl.wrap }}"
+  register: booking_agent_wrapped
+  changed_when: true
+  no_log: true
+
+- name: Both into .secrets/workload/approle (0600, never printed)
+  ansible.builtin.copy:
+    dest: "{{ vult_root }}/.secrets/workload/approle/{{ item.name }}"
+    mode: "0600"
+    content: "{{ item.value }}"
+  loop:
+    - { name: role-id, value: "{{ booking_agent_role.json.data.role_id }}" }
+    - { name: wrapped-secret-id, value: "{{ booking_agent_wrapped.json.wrap_info.token }}" }
+  loop_control: { label: "{{ item.name }}" }
+  no_log: true
+
+- name: The delivery record (accessor and time, no value)
+  ansible.builtin.copy:
+    dest: "{{ vult_root }}/.build/agent/delivery.json"
+    mode: "0600"
+    content: "{{ {'act': booking_agent_act | int, 'wrap_accessor': booking_agent_wrapped.json.wrap_info.accessor, 'wrapped_at': booking_agent_wrapped.json.wrap_info.creation_time, 'wrap_ttl': booking_agent_wrapped.json.wrap_info.ttl} | to_nice_json }}"
+
+- name: Agent picks it up (agent-init, then Agent itself)
+  ansible.builtin.shell: |
+    set -euo pipefail
+    c="{{ vult_root }}/scripts/compose.sh workload --profile act2"
+    $c up -d --force-recreate --no-deps agent-init
+    rc=$(podman wait vult-agent_init)
+    [ "$rc" = 0 ] || { podman logs vult-agent_init >&2; exit 1; }
+    $c up -d --force-recreate --no-deps booking-agent
+    for _ in $(seq 1 45); do
+      [ "$(podman inspect vult-booking_agent --format '{{ '{{' }}.State.Health.Status{{ '}}' }}')" = healthy ] && break
+      sleep 2
+    done
+    [ "$(podman inspect vult-booking_agent --format '{{ '{{' }}.State.Health.Status{{ '}}' }}')" = healthy ] ||
+      { podman logs --tail 30 vult-booking_agent >&2; exit 1; }
+    $c rm -f agent-init >/dev/null
+  args: { executable: /bin/bash }
+  environment:
+    VULT_AGENT_ACT: "{{ booking_agent_act }}"
+  changed_when: true
+
+- name: The app runs on Agent's lease
+  ansible.builtin.uri:
+    url: "{{ vult_booking_url }}/healthz"
+    ca_path: "{{ vult_ca }}"
+  register: booking_agent_health
+  until: booking_agent_health.json.credential | default('') == 'vault-agent'
+  retries: 20
+  delay: 2
+  check_mode: false

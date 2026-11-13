@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tidewell Ferries bookings</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header>
+    <h1>Tidewell Ferries</h1>
+    <p class="note">A fictional ferry company. Every passenger here is invented.</p>
+    <div id="who" aria-live="polite"></div>
+  </header>
+  <main>
+    <section aria-labelledby="h-crossings">
+      <h2 id="h-crossings">Crossings</h2>
+      <table id="crossings">
+        <thead><tr><th scope="col">Day</th><th scope="col">Departs</th><th scope="col">Route</th><th scope="col">Booked</th><th scope="col">Status</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </section>
+    <section aria-labelledby="h-book">
+      <h2 id="h-book">Book a crossing</h2>
+      <form id="book">
+        <label for="book-crossing">Crossing</label>
+        <select id="book-crossing" name="crossing" required></select>
+        <label for="book-name">Passenger name</label>
+        <input id="book-name" name="name" autocomplete="off" required maxlength="60">
+        <button type="submit">Book</button>
+        <p id="book-result" role="status"></p>
+      </form>
+    </section>
+    <section id="staff" aria-labelledby="h-staff" hidden>
+      <h2 id="h-staff">Staff</h2>
+      <label for="staff-crossing">Crossing</label>
+      <select id="staff-crossing"></select>
+      <button id="manifest-show" type="button">Show manifest</button>
+      <button id="crossing-cancel" type="button">Cancel for weather</button>
+      <p id="staff-result" role="status"></p>
+      <table id="manifest" hidden>
+        <thead><tr><th scope="col">Booking</th><th scope="col">Passenger</th><th scope="col">Plate</th><th scope="col">Status</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <h3>Support notes</h3>
+      <form id="note">
+        <label for="note-body">New note</label>
+        <textarea id="note-body" name="body" rows="3" maxlength="2000" required></textarea>
+        <button type="submit">Post note</button>
+      </form>
+      <ul id="notes"></ul>
+    </section>
+  </main>
+</body>
+</html>

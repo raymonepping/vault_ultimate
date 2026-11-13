@@ -1,0 +1,140 @@
+# github_app (D10). Idempotent: a second run sees both flags active, the app
+# with the PEM's fingerprint and the destination as declared, and changes
+# nothing. The private key travels in one request body (no_log) and is never
+# printed; Vault reads it back as *****.
+
+- name: Read the activation flags
+  ansible.builtin.uri:
+    url: "{{ github_app_root }}/sys/activation-flags"
+    ca_path: "{{ vult_ca }}"
+    headers: { X-Vault-Token: "{{ github_app_token }}" }
+  register: github_app_flags
+  check_mode: false
+
+# Every sys/sync call is 403 until secrets-sync is activated (probe P2).
+- name: Activate Secrets Sync and Secrets Import
+  ansible.builtin.uri:
+    url: "{{ github_app_root }}/sys/activation-flags/{{ item }}/activate"
+    ca_path: "{{ vult_ca }}"
+    method: PUT
+    headers: { X-Vault-Token: "{{ github_app_token }}" }
+    body_format: json
+    body: {}
+    status_code: [200, 204]
+  loop: [secrets-sync, secrets-import]
+  when: item not in (github_app_flags.json.data.activated | default([]))
+  changed_when: true
+
+- name: Find the GitHub App's private key
+  ansible.builtin.find:
+    paths: "{{ vult_root }}/.secrets/github"
+    patterns: "*.pem"
+  register: github_app_pem_files
+  check_mode: false
+
+- name: Stop when the key is gone (make github-forget-key)
+  ansible.builtin.assert:
+    that: github_app_pem_files.files | length == 1
+    fail_msg: >-
+      Expected one private key in .secrets/github/, found {{ github_app_pem_files.files | length }}.
+      Generate a new private key for VaultSyncDemo in GitHub (App settings, Private keys)
+      and put it in .secrets/github/ (chmod 600), then make github-app.
+    quiet: true
+
+- name: Keep the key private (0600)
+  ansible.builtin.file:
+    path: "{{ github_app_pem_files.files[0].path }}"
+    mode: "0600"
+
+# GitHub and Vault both show SHA-256 of the public key (DER), base64.
+- name: The key's public fingerprint
+  ansible.builtin.shell: >-
+    set -o pipefail &&
+    openssl rsa -in "$PEM_PATH" -pubout -outform DER 2>/dev/null | openssl dgst -sha256 -binary | base64
+  args:
+    executable: /bin/bash
+  environment:
+    PEM_PATH: "{{ github_app_pem_files.files[0].path }}"
+  register: github_app_pem_fp
+  changed_when: false
+  check_mode: false
+
+- name: Read the app in Vault
+  ansible.builtin.uri:
+    url: "{{ github_app_ns }}/sys/sync/github-apps/{{ vult_github.app }}"
+    ca_path: "{{ vult_ca }}"
+    headers: { X-Vault-Token: "{{ github_app_token }}" }
+    status_code: [200, 404]
+  register: github_app_app
+  check_mode: false
+
+# Registered when missing, and again when the key in .secrets/github/ changed
+# (a new key generated in GitHub): the fingerprints then differ.
+- name: Register the GitHub App (app id and private key)
+  ansible.builtin.uri:
+    url: "{{ github_app_ns }}/sys/sync/github-apps/{{ vult_github.app }}"
+    ca_path: "{{ vult_ca }}"
+    method: POST
+    headers: { X-Vault-Token: "{{ github_app_token }}" }
+    body_format: json
+    body:
+      app_id: "{{ vult_github.app_id }}"
+      private_key: "{{ lookup('ansible.builtin.file', github_app_pem_files.files[0].path) }}"
+    status_code: [200, 204]
+  when: github_app_app.status == 404 or github_app_app.json.data.fingerprint | default('') != github_app_pem_fp.stdout
+  changed_when: true
+  no_log: true
+
+- name: Read the app back
+  ansible.builtin.uri:
+    url: "{{ github_app_ns }}/sys/sync/github-apps/{{ vult_github.app }}"
+    ca_path: "{{ vult_ca }}"
+    headers: { X-Vault-Token: "{{ github_app_token }}" }
+  register: github_app_app_now
+  check_mode: false
+
+- name: Vault holds this key (fingerprints equal) and masks it
+  ansible.builtin.assert:
+    that:
+      - github_app_app_now.json.data.fingerprint == github_app_pem_fp.stdout
+      - github_app_app_now.json.data.app_id | string == vult_github.app_id | string
+      - github_app_app_now.json.data.private_key == '*****'
+    fail_msg: Vault's fingerprint of the VaultSyncDemo key differs from the PEM in .secrets/github/.
+    quiet: true
+
+- name: Read the GitHub destination
+  ansible.builtin.uri:
+    url: "{{ github_app_ns }}/sys/sync/destinations/gh/{{ github_app_destination }}"
+    ca_path: "{{ vult_ca }}"
+    headers: { X-Vault-Token: "{{ github_app_token }}" }
+    status_code: [200, 404]
+  register: github_app_dest
+  check_mode: false
+
+- name: Create the GitHub destination
+  ansible.builtin.uri:
+    url: "{{ github_app_ns }}/sys/sync/destinations/gh/{{ github_app_destination }}"
+    ca_path: "{{ vult_ca }}"
+    method: POST
+    headers: { X-Vault-Token: "{{ github_app_token }}" }
+    body_format: json
+    body: "{{ github_app_destination_body }}"
+    status_code: [200, 204]
+  when: github_app_dest.status == 404
+  changed_when: true
+
+# A destination that differs is not silently rewritten: it may carry the
+# story's associations. Say what differs and how to recreate it.
+- name: The existing destination is the declared one
+  ansible.builtin.assert:
+    that:
+      - github_app_dest.json.data.connection_details.installation_id | string == vult_github.installation_id | string
+      - github_app_dest.json.data.connection_details.repository_owner == vult_github.owner
+      - github_app_dest.json.data.connection_details.repository_name == vult_github.repo
+      - github_app_dest.json.data.connection_details.app_config.app_name == vult_github.app
+      - github_app_dest.json.data.options.secret_name_template == github_app_destination_body.secret_name_template
+    fail_msg: >-
+      {{ github_app_destination }} differs from roles/github_app/defaults/main.yml.
+      make stage-reset CONFIRM=yes removes its associations; then delete it and run make github-app.
+    quiet: true
+  when: github_app_dest.status == 200

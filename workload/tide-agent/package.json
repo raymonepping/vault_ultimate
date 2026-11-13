@@ -1,0 +1,14 @@
+{
+  "name": "tidewell-tide-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Tidewell's AI agent (fictional): Ollama maps a clerk's request onto a fixed allowlist; the booking API does the work.",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "test": "NODE_ENV=test node --test 'test/*.test.js'"
+  }
+}

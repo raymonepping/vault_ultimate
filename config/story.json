@@ -1,0 +1,84 @@
+{
+  "company": "Tidewell Ferries (fictional)",
+  "ports": [
+    "Kelmouth",
+    "Arnsey Quay"
+  ],
+  "vessel": "MV Tidewell Star",
+  "presenter": {
+    "user": "saskia",
+    "display": "Saskia",
+    "group": "platform",
+    "role": "Platform engineer"
+  },
+  "clerk": {
+    "user": "teun",
+    "display": "Teun",
+    "group": "bookings",
+    "role": "Booking clerk"
+  },
+  "schedule": {
+    "days": 2,
+    "departures": [
+      "07:30",
+      "11:00",
+      "15:30"
+    ],
+    "seats": 40,
+    "booked_per_crossing": 18,
+    "manifest_seed": 20261113
+  },
+  "weather_cancel": {
+    "day": 1,
+    "departure": "11:00",
+    "rebook_to": "15:30"
+  },
+  "notes": {
+    "act0": "Bookings fail for the 07:30 again. The app still uses the database password from booking.env, the one from the old runbook. Can someone look?"
+  },
+  "legacy": [
+    {
+      "aws_name": "tidewell-legacy/harbour-feed",
+      "kv_name": "ops/harbour-feed",
+      "value": "tidewell-harbour-demo-0001",
+      "labels": {
+        "owner": "operations",
+        "origin": "legacy-aws-secrets-manager",
+        "classification": "internal"
+      }
+    },
+    {
+      "aws_name": "tidewell-legacy/ticket-printer",
+      "kv_name": "ops/ticket-printer",
+      "value": "tidewell-printer-demo-0002",
+      "labels": {
+        "owner": "terminal-team",
+        "origin": "legacy-aws-secrets-manager",
+        "classification": "internal"
+      }
+    },
+    {
+      "aws_name": "tidewell-legacy/smtp-relay",
+      "kv_name": "ops/smtp-relay",
+      "value": "tidewell-smtp-demo-0003",
+      "labels": {
+        "owner": "notifications",
+        "origin": "legacy-aws-secrets-manager",
+        "classification": "internal"
+      }
+    }
+  ],
+  "deploy": {
+    "kv_name": "ci/deploy-token",
+    "github_name": "TIDEWELL_CI_DEPLOY_TOKEN_VALUE",
+    "aws_name": "tidewell-ci/deploy-token"
+  },
+  "sync": {
+    "secret": "ci/deploy-token",
+    "destinations": [
+      "github",
+      "localstack"
+    ]
+  },
+  "rotate": "ci/deploy-token"
+}

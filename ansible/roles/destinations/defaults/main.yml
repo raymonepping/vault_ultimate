@@ -1,0 +1,17 @@
+destinations_ns: "{{ vult_cluster_addr }}/v1/{{ vult_namespace }}"
+destinations_token: "{{ lookup('ansible.builtin.file', vult_tokens_dir + '/ansible-platform') }}"
+destinations_name: tidewell-localstack
+# The Vault nodes reach LocalStack through AWS_ENDPOINT_URL (compose/vault);
+# the allowlist names LocalStack's /32 and port only (probe P10, P11).
+# Synthetic keys: LocalStack is an emulator, never real AWS.
+destinations_body:
+  access_key_id: test
+  secret_access_key: test
+  region: "{{ vult_localstack.region }}"
+  granularity: secret-path
+  secret_name_template: "tidewell-{{ '{{' }} .SecretPath {{ '}}' }}"
+  allowed_ipv4_addresses: ["{{ vult_localstack.ip }}/32"]
+  allowed_ports: [4566]
+# The copy's name is the template with the path filled in: the part before
+# {{ .SecretPath }} (tasks/main.yml asserts the template ends with it).
+destinations_copy_prefix: "{{ destinations_body.secret_name_template | regex_replace('\\{\\{ *\\.SecretPath *\\}\\}$', '') }}"

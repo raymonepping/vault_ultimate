@@ -1,0 +1,50 @@
+# compose/ai/compose.yaml: Ollama for the AI agent (D8). Internal only: no
+# host port, so it cannot clash with another lab's 127.0.0.1:11434 and nothing
+# outside vult-internal reaches an Ollama that has no authentication. CPU and
+# memory are capped so a model cannot starve Vault, Keycloak and PostgreSQL
+# (the cause of an earlier lab's clock drift). OLLAMA_NO_CLOUD keeps every
+# prompt on this Mac: act 6 summarises audit evidence.
+#
+# The models live in the external volume vult-ollama_models, created by
+# scripts/ai-up.sh: make clean-slate keeps it, make clean-models removes it.
+# Ansible pulls only missing models (ansible/models.yml).
+
+services:
+  ollama:
+    image: ${OLLAMA_IMAGE}
+    container_name: vult-ollama
+    hostname: ollama
+    environment:
+      OLLAMA_HOST: 0.0.0.0:11434
+      OLLAMA_MAX_LOADED_MODELS: "1"
+      OLLAMA_NUM_PARALLEL: "1"
+      OLLAMA_KEEP_ALIVE: 10m
+      OLLAMA_NO_CLOUD: "1"
+      OLLAMA_FLASH_ATTENTION: "1"
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    volumes:
+      - ollama-models:/root/.ollama
+    networks:
+      default:
+        aliases: [ollama]
+    cpus: ${VULT_OLLAMA_CPUS}
+    mem_limit: ${VULT_OLLAMA_MEMORY}
+    restart: unless-stopped
+    healthcheck:
+      # The image has no curl: the bundled client asks /api/tags.
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+
+networks:
+  default:
+    name: vult-internal
+    external: true
+
+volumes:
+  ollama-models:
+    name: vult-ollama_models
+    external: true

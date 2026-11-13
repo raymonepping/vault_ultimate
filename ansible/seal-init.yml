@@ -1,0 +1,18 @@
+# Phase 2 (ansible seal-init): vault-s from empty volume to Shamir-unsealed,
+# its two bootstrap policies written and the tf-seal and ansible-seal tokens
+# minted with the init root token, which is then revoked (D6, D7).
+- name: Initialise vault-s
+  hosts: localhost
+  gather_facts: false
+  roles:
+    - role: vault_init
+      vars:
+        vault_init_cluster: seal
+        vault_init_addr: "{{ vult_seal_addr }}"
+        vault_init_params: { secret_shares: 1, secret_threshold: 1 }
+        vault_init_policies:
+          - { name: vult-tf-seal, file: vault/policies/bootstrap/vult-tf-seal.hcl }
+          - { name: vult-ansible-seal, file: vault/policies/bootstrap/vult-ansible-seal.hcl }
+        vault_init_tokens:
+          - { name: tf-seal, policy: vult-tf-seal, period: 768h }
+          - { name: ansible-seal, policy: vult-ansible-seal, period: 768h }

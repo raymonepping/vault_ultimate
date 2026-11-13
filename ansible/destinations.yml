@@ -1,0 +1,7 @@
+# Phase 11 (ansible destinations, D11): the aws-sm destination to LocalStack
+# with synthetic credentials and the narrowest networking the probe proved.
+- name: The LocalStack destination
+  hosts: localhost
+  gather_facts: false
+  roles:
+    - destinations

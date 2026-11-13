@@ -1,0 +1,87 @@
+# destinations (D11). Idempotent: created when missing, checked when present.
+
+- name: Read the LocalStack destination
+  ansible.builtin.uri:
+    url: "{{ destinations_ns }}/sys/sync/destinations/aws-sm/{{ destinations_name }}"
+    ca_path: "{{ vult_ca }}"
+    headers: { X-Vault-Token: "{{ destinations_token }}" }
+    status_code: [200, 404]
+  register: destinations_now
+  check_mode: false
+
+- name: Create the LocalStack destination
+  ansible.builtin.uri:
+    url: "{{ destinations_ns }}/sys/sync/destinations/aws-sm/{{ destinations_name }}"
+    ca_path: "{{ vult_ca }}"
+    method: POST
+    headers: { X-Vault-Token: "{{ destinations_token }}" }
+    body_format: json
+    body: "{{ destinations_body }}"
+    status_code: [200, 204]
+  when: destinations_now.status == 404
+  changed_when: true
+  no_log: true
+
+- name: The existing destination is the declared one
+  ansible.builtin.assert:
+    that:
+      - destinations_now.json.data.connection_details.region == destinations_body.region
+      - destinations_now.json.data.connection_details.allowed_ipv4_addresses == destinations_body.allowed_ipv4_addresses
+      - destinations_now.json.data.connection_details.allowed_ports == destinations_body.allowed_ports
+      - destinations_now.json.data.options.secret_name_template == destinations_body.secret_name_template
+    fail_msg: >-
+      {{ destinations_name }} differs from roles/destinations/defaults/main.yml.
+      make stage-reset CONFIRM=yes removes its associations; then delete it and run make destinations.
+    quiet: true
+  when: destinations_now.status == 200
+
+# LocalStack keeps nothing across a restart on the free licence (measured).
+# An association whose copy is gone is removed, so Vault and the store agree;
+# the presenter pushes again. Removing a copy that is already gone is a no-op
+# for LocalStack. The secret in Vault is not touched.
+- name: The copy's name is a prefix plus the secret's path
+  ansible.builtin.assert:
+    that: destinations_body.secret_name_template is regex('\{\{ *\.SecretPath *\}\}$')
+    fail_msg: secret_name_template must end with {{ '{{' }} .SecretPath {{ '}}' }}; the reconcile below looks copies up by that name.
+    quiet: true
+
+- name: Read the AWS destination's associations
+  ansible.builtin.uri:
+    url: "{{ destinations_ns }}/sys/sync/destinations/aws-sm/{{ destinations_name }}/associations"
+    ca_path: "{{ vult_ca }}"
+    headers: { X-Vault-Token: "{{ destinations_token }}" }
+  register: destinations_assoc
+  check_mode: false
+
+- name: Does LocalStack still hold each synced copy?
+  ansible.builtin.uri:
+    url: "{{ vult_localstack.url }}/"
+    ca_path: "{{ vult_ca }}"
+    method: POST
+    headers:
+      X-Amz-Target: secretsmanager.DescribeSecret
+      Content-Type: application/x-amz-json-1.1
+      Authorization: >-
+        AWS4-HMAC-SHA256 Credential=test/20260101/{{ vult_localstack.region }}/secretsmanager/aws4_request,
+        SignedHeaders=host, Signature=0
+    body: "{{ {'SecretId': destinations_copy_prefix + item.secret_name} | to_json }}"
+    status_code: [200, 400]
+  loop: "{{ destinations_assoc.json.data.associated_secrets | default({}) | dict2items | map(attribute='value') | list }}"
+  loop_control:
+    label: "{{ item.secret_name }}"
+  register: destinations_copies
+  check_mode: false
+
+- name: Remove the associations whose copy LocalStack lost
+  ansible.builtin.uri:
+    url: "{{ destinations_ns }}/sys/sync/destinations/aws-sm/{{ destinations_name }}/associations/remove"
+    ca_path: "{{ vult_ca }}"
+    method: POST
+    headers: { X-Vault-Token: "{{ destinations_token }}" }
+    body_format: json
+    body: { mount: "{{ item.item.mount }}", secret_name: "{{ item.item.secret_name }}" }
+  loop: "{{ destinations_copies.results }}"
+  loop_control:
+    label: "{{ item.item.secret_name }}"
+  when: item.status == 400
+  changed_when: true

@@ -1,0 +1,7 @@
+people_ns: "{{ vult_cluster_addr }}/v1/{{ vult_namespace }}"
+people_token: "{{ lookup('ansible.builtin.file', vult_tokens_dir + '/ansible-platform') }}"
+# Her token lives as long as the console session may idle (D13).
+people_settings:
+  token_policies: [vult-presenter]
+  token_ttl: "{{ vult_session_idle | int }}"
+  token_max_ttl: "{{ vult_session_idle | int * 2 }}"

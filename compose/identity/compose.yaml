@@ -1,0 +1,164 @@
+# compose/identity/compose.yaml: who people are (OpenLDAP, Keycloak) and the
+# bind password Keycloak uses, which is one of the before estate's standing
+# secrets until act 4 hands it to Vault. From vault_dance, simplified.
+#
+#   identity-init      one-shot: copies .secrets/identity (generated on the host
+#                      by scripts/identity-secrets.sh) and the lab certificate
+#                      onto volumes, owned by the user each service runs as
+#   openldap           dc=tidewell,dc=lab (not published)
+#   ldap-bootstrap     one-shot (profile init): entries and passwords
+#   keycloak           realm tidewell, HTTPS on 14203 with the lab certificate
+#   keycloak-bootstrap one-shot (profile init): realm, federation, clients
+
+services:
+  identity-init:
+    image: ${ALPINE_IMAGE}
+    container_name: vult-identity_init
+    user: "0:0"
+    network_mode: none
+    entrypoint:
+      - /bin/sh
+      - -c
+      - >-
+        umask 077 &&
+        rm -rf /run/secrets/* &&
+        cp -R /src/secrets/. /run/secrets/ &&
+        chown -R 1000:1000 /run/secrets && chmod -R go-rwx /run/secrets &&
+        cp /src/tls/vault.crt /src/tls/vault.key /src/tls/ca-chain.pem /tls/ &&
+        chown 1000:1000 /tls/* && chmod 0600 /tls/vault.key &&
+        echo '[identity-init] done'
+    volumes:
+      - ../../.secrets/identity:/src/secrets:ro
+      - ../../vault-tls:/src/tls:ro
+      - identity-secrets:/run/secrets
+      - keycloak-tls:/tls
+    restart: "no"
+
+  openldap:
+    image: ${OPENLDAP_IMAGE}
+    container_name: vult-openldap
+    hostname: openldap
+    environment:
+      LDAP_ORGANISATION: "Tidewell Ferries (fictional)"
+      LDAP_DOMAIN: "tidewell.lab"
+      LDAP_BASE_DN: "dc=tidewell,dc=lab"
+      LDAP_ADMIN_PASSWORD_FILE: "/run/secrets/ldap-admin-password"
+      LDAP_TLS: "false"
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE, CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID, KILL]
+    security_opt: ["no-new-privileges:true"]
+    volumes:
+      - ldap-data:/var/lib/ldap
+      - ldap-config:/etc/ldap/slapd.d
+      - identity-secrets:/run/secrets:ro
+    networks:
+      default:
+        aliases: [openldap]
+    mem_limit: 256m
+    restart: unless-stopped
+    depends_on:
+      identity-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "ldapsearch -x -H ldap://localhost -D cn=admin,dc=tidewell,dc=lab -w \"$$(cat /run/secrets/ldap-admin-password)\" -b dc=tidewell,dc=lab -s base >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  ldap-bootstrap:
+    image: ${OPENLDAP_IMAGE}
+    container_name: vult-ldap_bootstrap
+    profiles: ["init"]
+    environment:
+      LDAP_BASE_DN: "dc=tidewell,dc=lab"
+      LDAP_HOST: "openldap"
+      VULT_SET_KEYCLOAK_BIND: "${VULT_SET_KEYCLOAK_BIND:-0}"
+    entrypoint: ["/bootstrap/setup_ldap.sh"]
+    volumes:
+      - ./ldap:/bootstrap:ro
+      - identity-secrets:/run/secrets:ro
+    networks: [default]
+    depends_on:
+      openldap:
+        condition: service_healthy
+
+  keycloak:
+    image: ${KEYCLOAK_IMAGE}
+    container_name: vult-keycloak
+    hostname: keycloak
+    entrypoint: ["/bin/sh", "/entry/entrypoint.sh"]
+    command: start-dev
+    environment:
+      # Browser-facing issuer is fixed; internal callers (Vault's JWKS, the
+      # API, kcadm) use keycloak:8443 or :8080 and get backchannel URLs.
+      KC_HOSTNAME: "https://localhost:${VULT_PORT_KEYCLOAK}"
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
+      KC_HOSTNAME_STRICT: "false"
+      KC_HTTP_ENABLED: "true"
+      KC_HTTPS_PORT: "8443"
+      KC_HTTPS_CERTIFICATE_FILE: /tls/vault.crt
+      KC_HTTPS_CERTIFICATE_KEY_FILE: /tls/vault.key
+      KC_HEALTH_ENABLED: "true"
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: ["no-new-privileges:true"]
+    ports: ["127.0.0.1:${VULT_PORT_KEYCLOAK}:8443"]
+    volumes:
+      - keycloak-data:/opt/keycloak/data
+      - keycloak-tls:/tls:ro
+      - ./keycloak/entrypoint.sh:/entry/entrypoint.sh:ro
+      - identity-secrets:/run/secrets:ro
+    mem_limit: 1g
+    networks:
+      default:
+        aliases: [keycloak]
+    depends_on:
+      openldap:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/8080 && echo -e 'GET /realms/master/.well-known/openid-configuration HTTP/1.1\\r\\nhost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && cat <&3 | grep -q '200 OK' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 30s
+
+  keycloak-bootstrap:
+    image: ${KEYCLOAK_IMAGE}
+    container_name: vult-keycloak_bootstrap
+    profiles: ["init"]
+    entrypoint: ["/bin/bash", "/bootstrap/setup_keycloak.sh"]
+    environment:
+      KC_INTERNAL_URL: "http://keycloak:8080"
+      VULT_CONSOLE_URL: "https://localhost:${VULT_PORT_WEB}"
+      VULT_BOOKING_URL: "https://localhost:${VULT_PORT_BOOKING}"
+      VULT_SET_KEYCLOAK_BIND: "${VULT_SET_KEYCLOAK_BIND:-0}"
+      VULT_SET_BOOKING_SECRET: "${VULT_SET_BOOKING_SECRET:-0}"
+    volumes:
+      - ./keycloak:/bootstrap:ro
+      - identity-secrets:/run/secrets:ro
+    networks: [default]
+    depends_on:
+      keycloak:
+        condition: service_healthy
+
+networks:
+  default:
+    name: vult-internal
+    external: true
+
+volumes:
+  ldap-data:
+    name: vult-ldap_data
+    labels: { io.vult.data: "true" }
+  ldap-config:
+    name: vult-ldap_config
+    labels: { io.vult.data: "true" }
+  keycloak-data:
+    name: vult-keycloak_data
+    labels: { io.vult.data: "true" }
+  keycloak-tls:
+    name: vult-keycloak_tls
+  identity-secrets:
+    name: vult-identity_secrets

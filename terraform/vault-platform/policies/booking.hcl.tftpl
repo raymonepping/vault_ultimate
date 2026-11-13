@@ -1,0 +1,10 @@
+# vult-booking: the booking app's own Vault token (AppRole, from act 2),
+# held by its Vault Agent sidecar. Paths relative to namespace tidewell.
+path "database/creds/booking" { capabilities = ["read"] }
+path "sys/leases/renew" { capabilities = ["update"] }
+path "auth/token/renew-self" { capabilities = ["update"] }
+path "auth/token/lookup-self" { capabilities = ["read"] }
+%{ if act >= 3 ~}
+# Act 3: one-hour certificates for the booking site.
+path "pki/issue/booking" { capabilities = ["update"] }
+%{ endif ~}

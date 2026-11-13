@@ -1,0 +1,38 @@
+# seed. Idempotent: a secret that exists is left alone (its value may be the
+# story's own by then), a missing one is created. Loops run over names and
+# labels only: a failing task prints its item, and an item must never hold a
+# value. Only the no_log create task looks a value up.
+
+- name: Does each legacy secret exist?
+  ansible.builtin.uri:
+    url: "{{ vult_localstack.url }}/"
+    ca_path: "{{ vult_ca }}"
+    method: POST
+    headers: "{{ seed_headers | combine({'X-Amz-Target': 'secretsmanager.DescribeSecret'}) }}"
+    body: "{{ {'SecretId': item.aws_name} | to_json }}"
+    status_code: [200, 400]
+  loop: "{{ seed_story.legacy | items2dict(key_name='aws_name', value_name='labels') | dict2items(key_name='aws_name', value_name='labels') }}"
+  loop_control:
+    label: "{{ item.aws_name }}"
+  register: seed_found
+  check_mode: false
+
+# LocalStack requires ClientRequestToken (probe); to_uuid makes it stable per name.
+- name: Create the missing legacy secrets
+  ansible.builtin.uri:
+    url: "{{ vult_localstack.url }}/"
+    ca_path: "{{ vult_ca }}"
+    method: POST
+    headers: "{{ seed_headers | combine({'X-Amz-Target': 'secretsmanager.CreateSecret'}) }}"
+    body: >-
+      {{ {'Name': item.item.aws_name, 'ClientRequestToken': item.item.aws_name | to_uuid,
+          'SecretString': (seed_story.legacy | selectattr('aws_name', 'equalto', item.item.aws_name) | first).value,
+          'Description': 'Tidewell Ferries legacy secret (synthetic)',
+          'Tags': item.item.labels | dict2items(key_name='Key', value_name='Value')} | to_json }}
+    status_code: [200]
+  loop: "{{ seed_found.results }}"
+  loop_control:
+    label: "{{ item.item.aws_name }}"
+  when: item.status == 400
+  changed_when: true
+  no_log: true

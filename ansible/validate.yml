@@ -1,0 +1,117 @@
+# Phase 15 (ansible validate): read-only. Saskia signs in and holds exactly
+# vult-presenter (writes values, never reads one, moves only the two
+# destinations); the GitHub App and both destinations are in tidewell; LocalStack
+# holds the legacy secrets. Nothing here reads a secret value.
+- name: Validate the sync stage
+  hosts: localhost
+  gather_facts: false
+  vars:
+    v_ns: "{{ vult_cluster_addr }}/v1/{{ vult_namespace }}"
+    v_token: "{{ lookup('ansible.builtin.file', vult_tokens_dir + '/ansible-platform') }}"
+    v_story: "{{ lookup('ansible.builtin.file', vult_root + '/config/story.json') | from_json }}"
+    v_secret: "{{ v_story.sync.secret }}"
+  tasks:
+    - name: Saskia signs in through userpass
+      ansible.builtin.uri:
+        url: "{{ v_ns }}/auth/userpass/login/saskia"
+        ca_path: "{{ vult_ca }}"
+        method: POST
+        body_format: json
+        body:
+          password: "{{ lookup('ansible.builtin.file', vult_root + '/.secrets/people/saskia') }}"
+      register: v_ines
+      check_mode: false
+      no_log: true
+
+    - name: Her capabilities (her own token)
+      ansible.builtin.uri:
+        url: "{{ v_ns }}/sys/capabilities-self"
+        ca_path: "{{ vult_ca }}"
+        method: POST
+        headers: { X-Vault-Token: "{{ v_ines.json.auth.client_token }}" }
+        body_format: json
+        body:
+          paths:
+            - "kv/data/{{ v_secret }}"
+            - kv/data/parcel/smtp-relay
+            - "kv/metadata/{{ v_secret }}"
+            - sys/sync/destinations/gh/tidewell-github/associations/set
+            - sys/sync/destinations/aws-sm/tidewell-localstack/associations/remove
+            - "sys/sync/github-apps/{{ vult_github.app }}"
+            - sys/sync/destinations/gh/tidewell-github
+      register: v_caps
+      check_mode: false
+      no_log: true
+
+    - name: She reads only the secret she syncs (Vault requires it) and moves only associations
+      ansible.builtin.assert:
+        that:
+          - v_ines.json.auth.token_policies | sort == ['default', 'vult-presenter']
+          - v_caps.json.data['kv/data/' + v_secret] | sort == ['create', 'read', 'update']
+          - v_caps.json.data['kv/data/parcel/smtp-relay'] | sort == ['create', 'update']
+          - "'read' in v_caps.json.data['kv/metadata/' + v_secret]"
+          - v_caps.json.data['sys/sync/destinations/gh/tidewell-github/associations/set'] == ['update']
+          - v_caps.json.data['sys/sync/destinations/aws-sm/tidewell-localstack/associations/remove'] == ['update']
+          - v_caps.json.data['sys/sync/github-apps/' + vult_github.app] == ['deny']
+          - v_caps.json.data['sys/sync/destinations/gh/tidewell-github'] == ['read']
+        quiet: true
+
+    - name: Revoke the validation login
+      ansible.builtin.uri:
+        url: "{{ v_ns }}/auth/token/revoke-self"
+        ca_path: "{{ vult_ca }}"
+        method: POST
+        headers: { X-Vault-Token: "{{ v_ines.json.auth.client_token }}" }
+        status_code: [204]
+      check_mode: false
+      changed_when: false
+      no_log: true
+
+    - name: The GitHub App and both destinations
+      ansible.builtin.uri:
+        url: "{{ v_ns }}/sys/sync/{{ item }}"
+        ca_path: "{{ vult_ca }}"
+        headers: { X-Vault-Token: "{{ v_token }}" }
+      loop:
+        - "github-apps/{{ vult_github.app }}"
+        - destinations/gh/tidewell-github
+        - destinations/aws-sm/tidewell-localstack
+      register: v_sync
+      check_mode: false
+
+    - name: The app is masked; the LocalStack destination keeps its narrow allowlist
+      ansible.builtin.assert:
+        that:
+          - v_sync.results[0].json.data.private_key == '*****'
+          - v_sync.results[1].json.data.connection_details.installation_id | string == vult_github.installation_id | string
+          - v_sync.results[2].json.data.connection_details.allowed_ipv4_addresses == [vult_localstack.ip + '/32']
+        quiet: true
+
+    - name: LocalStack holds each legacy secret
+      ansible.builtin.uri:
+        url: "{{ vult_localstack.url }}/"
+        ca_path: "{{ vult_ca }}"
+        method: POST
+        headers:
+          X-Amz-Target: secretsmanager.DescribeSecret
+          Content-Type: application/x-amz-json-1.1
+          Authorization: >-
+            AWS4-HMAC-SHA256 Credential=test/20260101/{{ vult_localstack.region }}/secretsmanager/aws4_request,
+            SignedHeaders=host, Signature=0
+        body: "{{ {'SecretId': item.aws_name} | to_json }}"
+        return_content: true
+      # Names and labels only: a failing item is printed, a value never is.
+      loop: "{{ v_story.legacy | items2dict(key_name='aws_name', value_name='labels') | dict2items(key_name='aws_name', value_name='labels') }}"
+      loop_control:
+        label: "{{ item.aws_name }}"
+      register: v_legacy
+      check_mode: false
+
+    - name: Each carries its owner tag
+      ansible.builtin.assert:
+        # uri parses only application/json; LocalStack answers x-amz-json-1.1.
+        that: ((item.content | from_json).Tags | items2dict(key_name='Key', value_name='Value')).owner == item.item.labels.owner
+        quiet: true
+      loop: "{{ v_legacy.results }}"
+      loop_control:
+        label: "{{ item.item.aws_name }}"

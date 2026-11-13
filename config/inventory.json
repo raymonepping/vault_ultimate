@@ -1,0 +1,106 @@
+{
+  "about": "Every machine credential of Tidewell's before estate. The witness (api/lib/witness.js) reads each one's lifecycle from the lab's own record: Vault's lease and rotation state, PostgreSQL's VALID UNTIL, the certificate's notAfter and OCSP status, whether the before estate's file still holds it. The scoreboard counts what is standing. People's own passwords are not machine credentials and are not listed. A credential the lab cannot remove stays here as a residual, counted and explained. A copy counts as unmanaged only while the credential it holds still works and Vault does not keep it current.",
+  "credentials": [
+    {
+      "id": "booking-db-password",
+      "label": "The booking app's PostgreSQL password",
+      "kind": "postgres-password",
+      "lives_in": [
+        "booking.env"
+      ],
+      "test": "postgres-login",
+      "removed_by_act": 2,
+      "residual": false
+    },
+    {
+      "id": "booking-tls-key",
+      "label": "The booking site's year-long TLS certificate and key",
+      "kind": "tls-certificate",
+      "lives_in": [
+        "workload/booking/tls"
+      ],
+      "test": "tls-handshake-ocsp",
+      "removed_by_act": 3,
+      "residual": false
+    },
+    {
+      "id": "keycloak-ldap-bind",
+      "label": "The LDAP bind password Keycloak uses for federation",
+      "kind": "ldap-password",
+      "lives_in": [
+        "keycloak-federation"
+      ],
+      "test": "ldap-bind",
+      "removed_by_act": 4,
+      "residual": false
+    },
+    {
+      "id": "booking-oidc-client-secret",
+      "label": "The booking app's Keycloak client secret",
+      "kind": "oidc-client-secret",
+      "lives_in": [
+        "booking.env"
+      ],
+      "test": "oidc-client-credentials",
+      "removed_by_act": 4,
+      "residual": false,
+      "residual_if": "probe question 7 does not prove client authentication with a Vault-issued key"
+    },
+    {
+      "id": "tide-agent-api-key",
+      "label": "The AI agent's static API key for the booking API",
+      "kind": "api-key",
+      "lives_in": [
+        "tide-agent.env"
+      ],
+      "test": "booking-api-call",
+      "removed_by_act": 5,
+      "residual": false
+    },
+    {
+      "id": "ci-deploy-token",
+      "label": "The CI deploy token",
+      "kind": "static-token",
+      "lives_in": [
+        "github-actions-secret",
+        "localstack-copy"
+      ],
+      "test": "booking-deploy-check",
+      "removed_by_act": null,
+      "residual": true,
+      "residual_reason": "GitHub's runners cannot reach this lab's Vault, so the token stays static; Sync keeps every copy current and act 6 rotates it once. Production removes it with GitHub Actions OIDC to Vault's JWT auth."
+    }
+  ],
+  "copies": [
+    {
+      "id": "booking.env",
+      "holds": "booking-db-password",
+      "managed_from_act": 2
+    },
+    {
+      "id": "github-actions-secret",
+      "holds": "ci-deploy-token",
+      "managed_from_act": 1
+    },
+    {
+      "id": "localstack-copy",
+      "holds": "ci-deploy-token",
+      "managed_from_act": 1
+    },
+    {
+      "id": "localstack-legacy-harbour-feed",
+      "holds": "ops/harbour-feed",
+      "managed_from_act": 1
+    },
+    {
+      "id": "localstack-legacy-ticket-printer",
+      "holds": "ops/ticket-printer",
+      "managed_from_act": 1
+    },
+    {
+      "id": "localstack-legacy-smtp-relay",
+      "holds": "ops/smtp-relay",
+      "managed_from_act": 1
+    }
+  ]
+}

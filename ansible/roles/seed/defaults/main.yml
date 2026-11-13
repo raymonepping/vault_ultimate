@@ -1,0 +1,7 @@
+# The AWS JSON protocol with LocalStack's synthetic keys; LocalStack accepts
+# any signature for them. TLS is verified against the lab CA.
+seed_headers:
+  Content-Type: application/x-amz-json-1.1
+  Authorization: >-
+    AWS4-HMAC-SHA256 Credential=test/20260101/{{ vult_localstack.region }}/secretsmanager/aws4_request,
+    SignedHeaders=host, Signature=0

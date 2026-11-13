@@ -1,0 +1,8 @@
+# Phase 10 (ansible github-app, D10): activate Secrets Sync and Secrets
+# Import, register the VaultSyncDemo GitHub App in tidewell from the key in
+# .secrets/github/ (fingerprint checked), and create the gh destination.
+- name: The GitHub App and the GitHub destination
+  hosts: localhost
+  gather_facts: false
+  roles:
+    - github_app

@@ -1,0 +1,24 @@
+# The API runs Secrets Import (D12), which is a CLI in the Enterprise binary:
+# Node 24 goes onto the Vault Enterprise image (its layers are already on
+# disk) rather than a 555 MB binary onto the Node image.
+ARG NODE_IMAGE=docker.io/library/node:24-alpine
+ARG VAULT_ENT_IMAGE=docker.io/hashicorp/vault-enterprise:2.2.1-ent
+FROM ${NODE_IMAGE} AS node
+FROM ${VAULT_ENT_IMAGE}
+
+COPY --from=node /usr/local/bin/node /usr/local/bin/node
+COPY --from=node /usr/lib/libstdc++.so.6 /usr/lib/libgcc_s.so.1 /usr/lib/
+ENV NODE_ENV=production VAULT_BIN=/bin/vault
+WORKDIR /app
+# No dependencies (D14): no npm install.
+COPY package.json server.js ./
+COPY lib ./lib
+# config/story.json without the legacy values (scripts/app-build.sh strips them).
+COPY config ./config
+
+USER 1000:1000
+EXPOSE 3000
+HEALTHCHECK --interval=10s --timeout=4s --retries=6 --start-period=10s \
+  CMD ["node", "-e", "fetch('http://127.0.0.1:3000/api/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+ENTRYPOINT []
+CMD ["node", "server.js"]

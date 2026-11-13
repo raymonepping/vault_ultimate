@@ -1,0 +1,15 @@
+/* Plain and functional on purpose: this is Tidewell's own application, not
+   the lab's console (D15). System fonts, high contrast, visible focus. */
+:root { color-scheme: light; --ink: #1b1b1b; --line: #b8b8b8; --accent: #0b5394; }
+body { margin: 0 auto; max-width: 64rem; padding: 1rem; font: 16px/1.5 system-ui, sans-serif; color: var(--ink); background: #fff; }
+h1 { margin: 0; font-size: 1.6rem; }
+.note { margin: 0.2rem 0 1rem; color: #4a4a4a; }
+section { margin: 1.5rem 0; }
+table { border-collapse: collapse; width: 100%; }
+th, td { border-bottom: 1px solid var(--line); padding: 0.4rem; text-align: left; }
+label { display: block; margin-top: 0.6rem; font-weight: 600; }
+input, select, textarea, button { font: inherit; padding: 0.35rem 0.6rem; margin-top: 0.2rem; }
+button { background: var(--accent); color: #fff; border: 0; border-radius: 4px; cursor: pointer; margin-right: 0.4rem; }
+:focus-visible { outline: 3px solid #e69500; outline-offset: 2px; }
+a { color: var(--accent); }
+#notes li { margin: 0.4rem 0; white-space: pre-wrap; word-break: break-word; }

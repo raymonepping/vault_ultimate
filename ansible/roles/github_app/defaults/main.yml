@@ -1,0 +1,13 @@
+github_app_root: "{{ vult_cluster_addr }}/v1"
+github_app_ns: "{{ vult_cluster_addr }}/v1/{{ vult_namespace }}"
+github_app_token: "{{ lookup('ansible.builtin.file', vult_tokens_dir + '/ansible-platform') }}"
+github_app_destination: tidewell-github
+# Vault turns / and - into _ (probe P23): parcel/delivery-api -> TIDEWELL_PARCEL_DELIVERY_API_VALUE.
+github_app_destination_body:
+  app_name: "{{ vult_github.app }}"
+  installation_id: "{{ vult_github.installation_id }}"
+  repository_owner: "{{ vult_github.owner }}"
+  repository_name: "{{ vult_github.repo }}"
+  secrets_location: repository
+  granularity: secret-key
+  secret_name_template: "TIDEWELL_{{ '{{' }} .SecretPath | uppercase {{ '}}' }}_{{ '{{' }} .SecretKey | uppercase {{ '}}' }}"

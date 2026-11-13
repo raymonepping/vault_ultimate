@@ -1,0 +1,110 @@
+/* sync.css: the Tidewell Ferries console's own pieces on top of Vault daylight
+ * glass (vault-glass.css, shell.css, app.css). Every colour is a token. See
+ * DESIGN.md.
+ *
+ * Sync states on the system's pills (text on its own tint is AA):
+ *   synced          healthy  (green)
+ *   pending, other  pending  (amber)   Vault is still working
+ *   failed          rejected (red)     Vault's error is shown verbatim
+ *   not associated  none     (ink)     nothing is pushed: muted ink on the
+ *                                      hover wash (the indigo "manual" pill
+ *                                      is under AA on glass)
+ */
+
+/* ── The hero: one ink pane per page, holding the two-way map ─────────────── */
+.sync-hero { display: flex; flex-direction: column; gap: 18px; }
+.sync-hero__text { display: flex; flex-direction: column; gap: 6px; }
+.sync-hero .hero-lede { max-width: 760px; }
+/* A neutral state; tokens re-scoped by the ink island keep it legible there. */
+.vg-pill--none { background: var(--vg-hover); color: var(--vg-text-secondary); border: 1px solid var(--vg-border-strong); }
+
+/* ── The two-way map ─────────────────────────────────────────────────────── */
+.sync-map {
+  margin: 0;
+  display: grid;
+  grid-template-columns: minmax(150px, 1fr) minmax(120px, 0.8fr) minmax(150px, 1fr) minmax(320px, 2.1fr);
+  align-items: center;
+  gap: 10px;
+}
+.map-node {
+  display: flex; flex-direction: column; gap: 3px; min-width: 0;
+  padding: 12px 14px; border-radius: 12px;
+  background: var(--vg-hover); border: 1px solid var(--vg-glass-border);
+}
+.map-node--vault { border-color: var(--vg-border-strong); background: var(--vg-bg-surface); }
+.map-node__head { display: flex; align-items: center; gap: 8px; }
+.map-node__head svg { width: 17px; height: 17px; flex-shrink: 0; color: var(--vg-action-bright); }
+.map-node--vault .map-node__head svg { color: var(--vg-pending); }
+.map-node__title { font-size: 14.5px; font-weight: 700; color: var(--vg-text-primary); }
+.map-node__sub { font-size: 12px; color: var(--vg-text-muted); font-family: var(--font-mono); overflow-wrap: anywhere; }
+.map-node__fact { font-size: 12.5px; color: var(--vg-text-secondary); }
+
+.map-arrow { display: flex; flex-direction: column; align-items: center; gap: 5px; min-width: 0; text-align: center; }
+.map-arrow__line {
+  position: relative; display: flex; align-items: center; justify-content: flex-end;
+  width: 100%; height: 14px; color: var(--vg-text-muted);
+}
+.map-arrow__line::before {
+  content: ""; position: absolute; left: 0; right: 6px; top: 50%;
+  border-top: 2px solid var(--vg-border-strong);
+}
+.map-arrow__line svg { position: relative; width: 16px; height: 16px; }
+.map-arrow__label { font-size: 12px; font-weight: 600; color: var(--vg-text-secondary); }
+.map-arrow__when { font-size: 11.5px; color: var(--vg-text-muted); }
+.map-out { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.map-out__row { display: grid; grid-template-columns: minmax(120px, 0.8fr) minmax(150px, 1.3fr); align-items: center; gap: 10px; }
+.map-caption { grid-column: 1 / -1; font-size: 12px; color: var(--vg-text-muted); }
+.map-caption code { color: var(--vg-text-secondary); }
+
+.sync-map--compact { gap: 8px; }
+.sync-map--compact .map-node { padding: 8px 11px; }
+.sync-map--compact .map-node__sub { display: none; }
+.sync-map--compact .map-node__title { font-size: 13px; }
+.sync-map--compact .map-out { gap: 6px; }
+
+/* A phone: one column, the arrows point down. */
+@media (max-width: 900px) {
+  .sync-map, .sync-map--compact { grid-template-columns: 1fr; }
+  .map-out__row { grid-template-columns: 1fr; }
+  .map-arrow { flex-direction: row; flex-wrap: wrap; justify-content: center; }
+  .map-arrow__line { width: 14px; height: 22px; justify-content: center; align-items: flex-end; }
+  .map-arrow__line::before { left: 50%; right: auto; top: 0; bottom: 6px; border-top: none; border-left: 2px solid var(--vg-border-strong); }
+  .map-arrow__line svg { transform: rotate(90deg); }
+}
+
+/* ── Small pieces ────────────────────────────────────────────────────────── */
+.fp {
+  font-family: var(--font-mono); font-size: 12px; color: var(--vg-text-primary);
+  padding: 1px 6px; border-radius: 6px; background: var(--vg-hover); border: 1px solid var(--vg-border-subtle);
+}
+.actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-start; }
+.step { display: inline-flex; flex-direction: column; gap: 8px; }
+.inline-notice.success {
+  background: var(--vg-healthy-bg); color: var(--vg-healthy);
+  border-color: color-mix(in srgb, var(--vg-hue-green) 25%, transparent);
+}
+.cli { display: flex; flex-direction: column; gap: 6px; }
+.labels { display: flex; flex-wrap: wrap; gap: 4px 8px; }
+.card-sub code { font-size: 11.5px; }
+
+/* Change once: the three places side by side. */
+.places { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.place {
+  display: flex; flex-direction: column; gap: 10px; padding: 14px; border-radius: 12px;
+  background: var(--vg-bg-elevated); border: 1px solid var(--vg-border-subtle);
+}
+.place h4 { margin: 0; font-size: 14px; font-weight: 700; color: var(--vg-text-primary); }
+@media (max-width: 900px) { .places { grid-template-columns: 1fr; } }
+
+/* Proof: the event list. */
+.events { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.event { display: flex; flex-direction: column; gap: 6px; padding: 12px 4px; border-bottom: 1px solid var(--vg-border-subtle); font-size: 13px; }
+.event:last-child { border-bottom: none; }
+.event__head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.event details summary { cursor: pointer; font-size: 12.5px; color: var(--vg-action-bright); }
+.event details[open] { display: flex; flex-direction: column; gap: 8px; }
+.said-steps { margin: 6px 0 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; }
+.said-error { display: block; color: var(--vg-critical); }
+
+/* Output is shown verbatim: no ligature may turn "->" into an arrow. */
+pre, .said-json, code { font-variant-ligatures: none; }

@@ -1,0 +1,75 @@
+# compose/cloud/compose.yaml: LocalStack, the AWS Secrets Manager emulator
+# (D11). It stands in for the legacy store Vault imports from (act I) and for
+# the AWS-shaped sync destination (acts II to IV). Synthetic credentials only;
+# it is never real AWS.
+#
+#   cert-init   one-shot: the lab certificate as LocalStack's server
+#               certificate (key, leaf, chain in one PEM), so Vault and the API
+#               reach https://localstack:4566 with TLS verified against the lab CA
+#   localstack  on a fixed address (Vault's sync destination allowlists one /32),
+#               its auth token from .env by compose interpolation only
+
+services:
+  cert-init:
+    image: ${ALPINE_IMAGE}
+    container_name: vult-cert_init
+    user: "0:0"
+    network_mode: none
+    entrypoint:
+      - /bin/sh
+      - -c
+      - >-
+        umask 077 &&
+        cat /src/vault.key /src/vault.crt /src/ca-chain.pem > /custom/server.test.pem &&
+        echo '[cert-init] done'
+    volumes:
+      - localstack-cert:/custom
+      - ../../vault-tls:/src:ro
+    restart: "no"
+
+  localstack:
+    image: ${LOCALSTACK_IMAGE}
+    container_name: vult-localstack
+    hostname: localstack
+    environment:
+      LOCALSTACK_AUTH_TOKEN: ${LOCALSTACK_AUTH_TOKEN:?put LOCALSTACK_AUTH_TOKEN in .env (a free LocalStack account)}
+      SERVICES: secretsmanager,sts
+      CUSTOM_SSL_CERT_PATH: /var/lib/localstack/custom/server.test.pem
+      SKIP_SSL_CERT_DOWNLOAD: "1"
+      LS_LOG: info
+    ports: ["127.0.0.1:${VULT_PORT_LOCALSTACK}:4566"]
+    volumes:
+      # The licence cache only. Secrets do not survive a restart: PERSISTENCE=1
+      # left the state directory empty on the free licence (measured), so
+      # make up re-seeds the legacy store and reconciles the AWS destination.
+      - localstack-state:/var/lib/localstack
+      - localstack-cert:/var/lib/localstack/custom:ro
+    networks:
+      default:
+        ipv4_address: ${VULT_LOCALSTACK_IP}
+        aliases: [localstack]
+    mem_limit: 1g
+    restart: unless-stopped
+    depends_on:
+      cert-init:
+        condition: service_completed_successfully
+    healthcheck:
+      # The image has no curl: its own Python asks the health endpoint. Shell
+      # form, because Podman splits a CMD-form argument on spaces.
+      test: ["CMD-SHELL", "python3 -c \"import json,sys,urllib.request as u; d=json.load(u.urlopen('http://localhost:4566/_localstack/health', timeout=4)); sys.exit(0 if d['services'].get('secretsmanager') in ('available', 'running') else 1)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
+networks:
+  default:
+    name: vult-internal
+    external: true
+
+volumes:
+  localstack-state:
+    name: vult-localstack_state
+    labels: { io.vult.data: "true" }
+  localstack-cert:
+    name: vult-localstack_cert

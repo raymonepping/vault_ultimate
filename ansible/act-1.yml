@@ -1,0 +1,157 @@
+# act-1 (ansible, make act-1): One home. The scattered secrets come into
+# Vault, and Vault takes over the hand-made copies (D22, probe P37, P38).
+#
+#   1. activation flags, the GitHub App and both destinations (roles from
+#      vault_sync); the LocalStack template tidewell-{{ .SecretPath }}
+#   2. the deploy token into KV ci/deploy-token (the same value: the
+#      takeover must not break CI)
+#   3. Secrets Import of the legacy secrets into kv/ops/* (only paths KV does
+#      not hold; "Secrets not imported" decides, never the exit code)
+#   4. ci/deploy-token associated with both destinations: Vault writes the
+#      names the hand-made copies already have, and manages them from now on
+#   5. the legacy originals deleted from LocalStack, each only after its KV
+#      path exists
+# The console's act 1 button does steps 3 and 4 as Saskia; this wave does
+# them as Ansible for make act-1 and the rehearsal's setup.
+- name: Act 1, one home
+  hosts: localhost
+  gather_facts: false
+  vars:
+    v_ns: "{{ vult_cluster_addr }}/v1/{{ vult_namespace }}"
+    v_token: "{{ lookup('ansible.builtin.file', vult_tokens_dir + '/ansible-platform') }}"
+    story: "{{ lookup('ansible.builtin.file', vult_root + '/config/story.json') | from_json }}"
+    ls_headers:
+      Content-Type: application/x-amz-json-1.1
+      Authorization: >-
+        AWS4-HMAC-SHA256 Credential=test/20260101/{{ vult_localstack.region }}/secretsmanager/aws4_request,
+        SignedHeaders=host, Signature=0
+  roles:
+    - github_app
+    - destinations
+  tasks:
+    - name: Read the deploy token in KV
+      ansible.builtin.uri:
+        url: "{{ v_ns }}/kv/data/{{ story.deploy.kv_name }}"
+        ca_path: "{{ vult_ca }}"
+        headers: { X-Vault-Token: "{{ v_token }}" }
+        status_code: [200, 404]
+      register: kv_deploy
+      no_log: true
+      check_mode: false
+
+    - name: Bring the deploy token home (the same value CI uses today)
+      ansible.builtin.uri:
+        url: "{{ v_ns }}/kv/data/{{ story.deploy.kv_name }}"
+        method: POST
+        ca_path: "{{ vult_ca }}"
+        headers: { X-Vault-Token: "{{ v_token }}" }
+        body_format: json
+        body: { data: { value: "{{ lookup('ansible.builtin.file', vult_root + '/.secrets/workload/deploy-token') }}" } }
+      when: kv_deploy.status == 404
+      changed_when: true
+      no_log: true
+
+    - name: Which legacy paths does KV hold already?
+      ansible.builtin.uri:
+        url: "{{ v_ns }}/kv/metadata/{{ item.kv_name }}"
+        ca_path: "{{ vult_ca }}"
+        headers: { X-Vault-Token: "{{ v_token }}" }
+        status_code: [200, 404]
+      loop: "{{ story.legacy }}"
+      loop_control: { label: "{{ item.kv_name }}" }
+      register: kv_legacy
+      check_mode: false
+
+    - name: Secrets Import of the paths KV does not hold
+      when: kv_legacy.results | selectattr('status', 'equalto', 404) | list | length > 0
+      block:
+        - name: The import config (names only, from config/story.json)
+          ansible.builtin.shell: |
+            set -euo pipefail
+            mkdir -p "{{ vult_root }}/.build/import"
+            node --input-type=module -e '
+              import { importConfig } from "{{ vult_root }}/api/lib/importer.js";
+              const want = JSON.parse(process.argv[1]);
+              process.stdout.write(importConfig({ secrets: want, address: "https://vault-1:8200", namespace: "{{ vult_namespace }}", mount: "kv", localstackIp: "{{ vult_localstack.ip }}" }));
+            ' '{{ kv_legacy.results | selectattr("status", "equalto", 404) | map(attribute="item") | map("dict2items") | map("selectattr", "key", "in", ["aws_name", "kv_name"]) | map("items2dict") | list | to_json }}' >"{{ vult_root }}/.build/import/import.hcl"
+          args: { executable: /bin/bash }
+          changed_when: false
+
+        - name: vault operator import apply (the Enterprise CLI in a throwaway Vault container; the token on stdin)
+          ansible.builtin.shell: |
+            set -euo pipefail
+            podman run --rm -i --name vult-import --network vult-internal \
+              -v "{{ vult_root }}/vault-tls/ca-chain.pem:/ca/ca-chain.pem:ro" \
+              -v "{{ vult_root }}/.build/import/import.hcl:/cfg/import.hcl:ro" \
+              -e VAULT_ADDR=https://vault-1:8200 -e VAULT_CACERT=/ca/ca-chain.pem \
+              -e AWS_ENDPOINT_URL=https://localstack:4566 -e SSL_CERT_DIR=/etc/ssl/certs:/ca \
+              -e AWS_ACCESS_KEY_ID=test -e AWS_SECRET_ACCESS_KEY=test -e AWS_REGION={{ vult_localstack.region }} \
+              -e HOME=/tmp --entrypoint /bin/sh "$IMAGE" \
+              -c 'read -r VAULT_TOKEN; export VAULT_TOKEN; vault operator import -config=/cfg/import.hcl -auto-approve apply' \
+              < "{{ vult_tokens_dir }}/ansible-platform"
+          args: { executable: /bin/bash }
+          environment:
+            IMAGE: "{{ lookup('ansible.builtin.pipe', 'grep ^VAULT_ENT_IMAGE= ' + vult_root + '/config/defaults.conf | cut -d= -f2') }}"
+          register: imported
+          changed_when: true
+          failed_when: imported.rc != 0 or 'Secrets not imported' in imported.stdout + imported.stderr
+
+    - name: Read both destinations' associations
+      ansible.builtin.uri:
+        url: "{{ v_ns }}/sys/sync/destinations/{{ item }}/associations"
+        ca_path: "{{ vult_ca }}"
+        headers: { X-Vault-Token: "{{ v_token }}" }
+      loop: [gh/tidewell-github, aws-sm/tidewell-localstack]
+      register: assoc_now
+      check_mode: false
+
+    - name: Associate the deploy token where it is not yet (Vault takes the hand-made copies over)
+      ansible.builtin.uri:
+        url: "{{ v_ns }}/sys/sync/destinations/{{ item.item }}/associations/set"
+        method: POST
+        ca_path: "{{ vult_ca }}"
+        headers: { X-Vault-Token: "{{ v_token }}" }
+        body_format: json
+        body: { mount: kv, secret_name: "{{ story.deploy.kv_name }}" }
+      loop: "{{ assoc_now.results }}"
+      loop_control: { label: "{{ item.item }}" }
+      when: >-
+        (item.json.data.associated_secrets | default({}) | dict2items
+         | selectattr('value.secret_name', 'equalto', story.deploy.kv_name) | list | length) == 0
+      changed_when: true
+
+    - name: Each legacy path now exists in KV
+      ansible.builtin.uri:
+        url: "{{ v_ns }}/kv/metadata/{{ item.kv_name }}"
+        ca_path: "{{ vult_ca }}"
+        headers: { X-Vault-Token: "{{ v_token }}" }
+      loop: "{{ story.legacy }}"
+      loop_control: { label: "{{ item.kv_name }}" }
+      check_mode: false
+
+    - name: Which legacy originals are still in LocalStack?
+      ansible.builtin.uri:
+        url: "{{ vult_localstack.url }}/"
+        ca_path: "{{ vult_ca }}"
+        method: POST
+        headers: "{{ ls_headers | combine({'X-Amz-Target': 'secretsmanager.DescribeSecret'}) }}"
+        body: "{{ {'SecretId': item.aws_name} | to_json }}"
+        status_code: [200, 400]
+      loop: "{{ story.legacy }}"
+      loop_control: { label: "{{ item.aws_name }}" }
+      register: originals
+      check_mode: false
+
+    # LocalStack answers 200 to deleting a secret that is already gone, so
+    # only the ones DescribeSecret found are deleted.
+    - name: Retire them (Vault is the system of record)
+      ansible.builtin.uri:
+        url: "{{ vult_localstack.url }}/"
+        ca_path: "{{ vult_ca }}"
+        method: POST
+        headers: "{{ ls_headers | combine({'X-Amz-Target': 'secretsmanager.DeleteSecret'}) }}"
+        body: "{{ {'SecretId': item.item.aws_name, 'ForceDeleteWithoutRecovery': true} | to_json }}"
+      loop: "{{ originals.results }}"
+      loop_control: { label: "{{ item.item.aws_name }}" }
+      when: item.status == 200
+      changed_when: true

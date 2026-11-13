@@ -1,0 +1,133 @@
+# stage-reset (ansible, make stage-reset, D17): undo the acts on purpose, in
+# reverse, up to the point where Terraform can go back to act 0. Runs before
+# scripts/tf.sh vault-platform apply ACT=0; before-estate and canary with
+# VULT_RESET=1 finish the job (scripts/stage-reset.sh).
+#
+#   acts 3 and 2   booking_app logs in again with its static password (VALID
+#                  UNTIL infinity), booking.env holds it again, Vault Agent's
+#                  renders are cleared and Agent removed: the app is on the
+#                  before estate's files before Terraform unmounts database/
+#                  (which revokes every lease; the revocation statements end
+#                  their sessions)
+#   act 1          every Sync association removed (Vault deletes the copies it
+#                  manages in GitHub and LocalStack), the KV paths act 1
+#                  brought home deleted with all their versions; before-estate
+#                  then re-seeds the legacy store and pastes the copies by hand
+#   act 0's note   deleted, so canary posts it again with a fresh time (the
+#                  leak window starts over)
+# The Sync activation flags and the two destinations stay: they hold no
+# credential and act 1 finds them in place.
+- name: Stage reset, the acts in reverse
+  hosts: localhost
+  gather_facts: false
+  vars:
+    v_ns: "{{ vult_cluster_addr }}/v1/{{ vult_namespace }}"
+    v_token: "{{ lookup('ansible.builtin.file', vult_tokens_dir + '/ansible-platform') }}"
+    w: "{{ vult_root }}/.secrets/workload"
+    story: "{{ lookup('ansible.builtin.file', vult_root + '/config/story.json') | from_json }}"
+    psql: podman exec -i vult-postgres gosu postgres psql -v ON_ERROR_STOP=1 -q -d tidewell
+    destinations: [gh/tidewell-github, aws-sm/tidewell-localstack]
+  tasks:
+    # ── Acts 3 and 2: the app back on the static password ────────────────────
+    - name: booking_app logs in again (static password, VALID UNTIL infinity)
+      ansible.builtin.command: "{{ psql }}"
+      args:
+        stdin: |
+          ALTER ROLE booking_app LOGIN PASSWORD '{{ lookup('ansible.builtin.file', w + '/booking-db-password') }}' VALID UNTIL 'infinity';
+          GRANT booking_rw TO booking_app;
+      changed_when: true
+      no_log: true
+
+    - name: booking.env holds the database credential again
+      ansible.builtin.lineinfile:
+        path: "{{ w }}/booking.env"
+        regexp: "^{{ item.key }}="
+        line: "{{ item.key }}={{ item.value }}"
+        insertafter: '^#'
+      loop:
+        - { key: DB_USER, value: booking_app }
+        - { key: DB_PASSWORD, value: "{{ lookup('ansible.builtin.file', w + '/booking-db-password') }}" }
+      loop_control: { label: "{{ item.key }}" }
+      no_log: true
+
+    - name: Agent goes, its renders are cleared, booking.env reaches the app
+      ansible.builtin.shell: |
+        set -euo pipefail
+        c="{{ vult_root }}/scripts/compose.sh workload"
+        $c --profile act2 rm -sf booking-agent >/dev/null
+        VULT_CLEAR_AGENT_OUT=1 $c up -d --force-recreate --no-deps booking-init
+        rc=$(podman wait vult-booking_init)
+        [ "$rc" = 0 ] || { podman logs vult-booking_init >&2; exit 1; }
+        $c rm -f booking-init >/dev/null
+      args: { executable: /bin/bash }
+      changed_when: true
+
+    - name: The app runs on booking.env
+      ansible.builtin.uri:
+        url: "{{ vult_booking_url }}/healthz"
+        ca_path: "{{ vult_ca }}"
+      register: health
+      until: health.json.credential | default('') == 'booking.env' and health.json.database | default('') == 'up'
+      retries: 15
+      delay: 2
+      check_mode: false
+
+    # ── Act 1: Vault lets go of the copies; the KV paths go ──────────────────
+    - name: Each destination's associations
+      ansible.builtin.uri:
+        url: "{{ v_ns }}/sys/sync/destinations/{{ item }}/associations"
+        ca_path: "{{ vult_ca }}"
+        headers: { X-Vault-Token: "{{ v_token }}" }
+        status_code: [200, 404]
+      loop: "{{ destinations }}"
+      register: assoc
+      check_mode: false
+
+    # associated_secrets is a map keyed by association id: flatten it.
+    - name: Every (destination, secret) pair
+      ansible.builtin.set_fact:
+        pairs: >-
+          {% set out = [] %}{% for r in assoc.results if r.status == 200 %}{% for a in (r.json.data.associated_secrets | default({})).values() %}{%
+          set _ = out.append({'dest': r.item, 'mount': a.mount, 'secret_name': a.secret_name}) %}{% endfor %}{% endfor %}{{ out }}
+
+    - name: Remove every association (Vault deletes the copy it manages)
+      ansible.builtin.uri:
+        url: "{{ v_ns }}/sys/sync/destinations/{{ item.dest }}/associations/remove"
+        method: POST
+        ca_path: "{{ vult_ca }}"
+        headers: { X-Vault-Token: "{{ v_token }}" }
+        body_format: json
+        body: { mount: "{{ item.mount }}", secret_name: "{{ item.secret_name }}" }
+      loop: "{{ pairs }}"
+      loop_control: { label: "{{ item.dest }}: {{ item.secret_name }}" }
+      changed_when: true
+
+    - name: Wait until both destinations carry nothing
+      ansible.builtin.uri:
+        url: "{{ v_ns }}/sys/sync/destinations/{{ item }}/associations"
+        ca_path: "{{ vult_ca }}"
+        headers: { X-Vault-Token: "{{ v_token }}" }
+        status_code: [200, 404]
+      loop: "{{ destinations }}"
+      register: left
+      until: left.status == 404 or (left.json.data.associated_secrets | default({}) | length) == 0
+      retries: 30
+      delay: 2
+      check_mode: false
+
+    - name: Delete the KV paths act 1 brought home, all versions
+      ansible.builtin.uri:
+        url: "{{ v_ns }}/kv/metadata/{{ item }}"
+        method: DELETE
+        ca_path: "{{ vult_ca }}"
+        headers: { X-Vault-Token: "{{ v_token }}" }
+        status_code: [204]
+      loop: "{{ [story.deploy.kv_name] + (story.legacy | map(attribute='kv_name') | list) }}"
+      changed_when: true
+
+    # ── Act 0's note starts over ─────────────────────────────────────────────
+    - name: Delete Teun's act 0 note (canary posts it again)
+      ansible.builtin.command: "{{ psql }}"
+      args:
+        stdin: "DELETE FROM support_notes WHERE author = '{{ story.clerk.user }}';"
+      changed_when: true

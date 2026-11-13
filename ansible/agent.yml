@@ -1,0 +1,20 @@
+# agent (ansible): a fresh secret zero for the booking app's Vault Agent,
+# from act 2 on. make workload-up runs it after booking was recreated, and
+# make wake-up when Agent lost its token; the acts use the same role.
+- name: The booking app's Vault Agent
+  hosts: localhost
+  gather_facts: false
+  vars:
+    act_now: "{{ lookup('ansible.builtin.pipe', 'cat ' + vult_root + '/.build/act 2>/dev/null || echo 0') | trim | int }}"
+  tasks:
+    - name: Before act 2 there is no Agent
+      ansible.builtin.meta: end_play
+      when: act_now | int < 2
+
+    - name: Deliver and start
+      ansible.builtin.include_role:
+        name: booking_agent
+      vars:
+        booking_agent_ns: "{{ vult_cluster_addr }}/v1/{{ vult_namespace }}"
+        booking_agent_token: "{{ lookup('ansible.builtin.file', vult_tokens_dir + '/ansible-platform') }}"
+        booking_agent_act: "{{ act_now }}"

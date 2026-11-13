@@ -1,0 +1,22 @@
+# Phase 6 (ansible bootstrap): initialise vault-1 (recovery 1/1; the seal is
+# Transit), write the platform bootstrap policies complete (prompt 04's path
+# lists), mint tf-platform, ansible-platform and the 4h probe token (prompt
+# 03, the user's choice), wait for three voters, then revoke root (D6).
+- name: Initialise the cluster
+  hosts: localhost
+  gather_facts: false
+  roles:
+    - role: vault_init
+      vars:
+        vault_init_cluster: vault
+        vault_init_addr: "{{ vult_node_addrs['vault-1'] }}"
+        vault_init_params: { recovery_shares: 1, recovery_threshold: 1 }
+        vault_init_policies:
+          - { name: vult-tf-platform, file: vault/policies/bootstrap/vult-tf-platform.hcl }
+          - { name: vult-ansible-platform, file: vault/policies/bootstrap/vult-ansible-platform.hcl }
+          - { name: vult-probe, file: vault/policies/probe.hcl }
+        vault_init_tokens:
+          - { name: tf-platform, policy: vult-tf-platform, period: 768h }
+          - { name: ansible-platform, policy: vult-ansible-platform, period: 768h }
+          - { name: probe, policy: vult-probe, ttl: 4h }
+    - cluster_bootstrap

@@ -1,0 +1,62 @@
+# people: runtime identity state (D8, D13). Idempotent: a second run reports
+# changed=0. Every task that touches the password is no_log.
+
+- name: Ensure .secrets/people (0700)
+  ansible.builtin.file:
+    path: "{{ vult_root }}/.secrets/people"
+    state: directory
+    mode: "0700"
+
+# The password lookup creates the file once (0600 under the wrapper's umask)
+# and reads it afterwards; it never prints it.
+- name: Read or create Saskia's password
+  ansible.builtin.set_fact:
+    people_password: "{{ lookup('ansible.builtin.password', vult_root + '/.secrets/people/saskia', length=32, chars=['ascii_letters', 'digits']) }}"
+  no_log: true
+
+- name: Does Saskia's userpass user exist?
+  ansible.builtin.uri:
+    url: "{{ people_ns }}/auth/userpass/users/saskia"
+    ca_path: "{{ vult_ca }}"
+    headers:
+      X-Vault-Token: "{{ people_token }}"
+    status_code: [200, 404]
+  register: people_user
+  check_mode: false
+  no_log: true
+
+# Created once with the password; afterwards only the settings are kept right.
+- name: Create Saskia's userpass user
+  ansible.builtin.uri:
+    url: "{{ people_ns }}/auth/userpass/users/saskia"
+    ca_path: "{{ vult_ca }}"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ people_token }}"
+    body_format: json
+    body:
+      password: "{{ people_password }}"
+      token_policies: "{{ people_settings.token_policies }}"
+      token_ttl: "{{ people_settings.token_ttl }}"
+      token_max_ttl: "{{ people_settings.token_max_ttl }}"
+    status_code: [204]
+  when: people_user.status == 404
+  changed_when: true
+  no_log: true
+
+- name: Keep Saskia's policy and token TTLs
+  ansible.builtin.uri:
+    url: "{{ people_ns }}/auth/userpass/users/saskia"
+    ca_path: "{{ vult_ca }}"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ people_token }}"
+    body_format: json
+    body: "{{ people_settings }}"
+    status_code: [204]
+  when: >-
+    people_user.status == 200 and (people_user.json.data.token_policies != people_settings.token_policies
+    or people_user.json.data.token_ttl != (people_settings.token_ttl | int)
+    or people_user.json.data.token_max_ttl != (people_settings.token_max_ttl | int))
+  changed_when: true
+  no_log: true

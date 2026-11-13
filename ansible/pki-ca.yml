@@ -1,0 +1,90 @@
+# Phase pki-ca (ansible): the CA ceremony for tidewell/pki. Vault generates
+# the intermediate's key and keeps it; the lab CA signs the CSR here on the
+# host (openssl, the CA key never leaves .secrets/tls/); Vault gets the
+# signed certificate and the lab chain. Everything that trusts the lab CA
+# (make trust-root, every container) then trusts the booking site's
+# certificates. Idempotent: skipped when the mount already has an issuer that
+# chains to the lab CA.
+- name: Tidewell's issuing CA
+  hosts: localhost
+  gather_facts: false
+  vars:
+    v_ns: "{{ vult_cluster_addr }}/v1/{{ vult_namespace }}"
+    v_token: "{{ lookup('ansible.builtin.file', vult_tokens_dir + '/ansible-platform') }}"
+    ca_crt: "{{ vult_root }}/.secrets/tls/ca.crt"
+    ca_key: "{{ vult_root }}/.secrets/tls/ca.key"
+    work: "{{ vult_root }}/.build/pki-ca"
+  tasks:
+    - name: Read the mount's issuers
+      ansible.builtin.uri:
+        url: "{{ v_ns }}/pki/issuers"
+        method: LIST
+        ca_path: "{{ vult_ca }}"
+        headers: { X-Vault-Token: "{{ v_token }}" }
+        status_code: [200, 404]
+      register: issuers
+      check_mode: false
+
+    - name: Read the default issuer's certificate
+      ansible.builtin.uri:
+        url: "{{ v_ns }}/pki/issuer/default/json"
+        ca_path: "{{ vult_ca }}"
+        headers: { X-Vault-Token: "{{ v_token }}" }
+        status_code: [200, 404, 500]
+      register: issuer
+      when: issuers.status == 200
+      check_mode: false
+
+    - name: Does it chain to the lab CA?
+      ansible.builtin.shell: |
+        set -euo pipefail
+        printf '%s' "$CERT" | openssl verify -CAfile "{{ ca_crt }}" /dev/stdin >/dev/null
+      args: { executable: /bin/bash }
+      environment:
+        CERT: "{{ issuer.json.data.certificate }}"
+      register: chains
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      when: issuer is not skipped and issuer.status == 200
+
+    - name: The ceremony
+      when: issuer is skipped or issuer.status != 200 or chains.rc != 0
+      block:
+        - name: Vault generates the intermediate's key and its CSR
+          ansible.builtin.uri:
+            url: "{{ v_ns }}/pki/intermediate/generate/internal"
+            method: POST
+            ca_path: "{{ vult_ca }}"
+            headers: { X-Vault-Token: "{{ v_token }}" }
+            body_format: json
+            body: { common_name: "Tidewell Ferries Issuing CA (fictional)", key_type: ec, key_bits: 256 }
+          register: csr
+          changed_when: true
+
+        - name: The lab CA signs it (ten years, path length 0)
+          ansible.builtin.shell: |
+            set -euo pipefail
+            umask 077
+            mkdir -p "{{ work }}"
+            printf '%s\n' "$CSR" >"{{ work }}/int.csr"
+            printf 'basicConstraints=critical,CA:TRUE,pathlen:0\nkeyUsage=critical,keyCertSign,cRLSign\nsubjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid\n' >"{{ work }}/ext.cnf"
+            openssl x509 -req -in "{{ work }}/int.csr" -CA "{{ ca_crt }}" -CAkey "{{ ca_key }}" -CAcreateserial \
+              -CAserial "{{ work }}/ca.srl" -days 3650 -sha256 -extfile "{{ work }}/ext.cnf" -out "{{ work }}/int.crt" 2>/dev/null
+            cat "{{ work }}/int.crt" "{{ ca_crt }}"
+          args: { executable: /bin/bash }
+          environment:
+            CSR: "{{ csr.json.data.csr }}"
+          register: signed
+          changed_when: true
+
+        - name: Vault takes the signed certificate and the chain
+          ansible.builtin.uri:
+            url: "{{ v_ns }}/pki/intermediate/set-signed"
+            method: POST
+            ca_path: "{{ vult_ca }}"
+            headers: { X-Vault-Token: "{{ v_token }}" }
+            body_format: json
+            body: { certificate: "{{ signed.stdout }}" }
+            status_code: [200, 204]
+          changed_when: true

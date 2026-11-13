@@ -1,0 +1,68 @@
+# compose/identity/ldap/bootstrap.ldif: Tidewell's directory. Fictional people,
+# no passwords (setup_ldap.sh sets them from the files scripts/identity-secrets.sh
+# generated on the host).
+#
+#   saskia   platform    the presenter, a platform engineer
+#   teun     bookings    a booking clerk; the AI agent acts on his behalf
+#
+#   keycloak-bind   Keycloak's federation bind (read only). Its password is a
+#                   standing secret of the before estate; Vault's LDAP secrets
+#                   engine takes it over in act 4 (static role keycloak-bind).
+#   vault-rotator   Vault's LDAP secrets engine: may write exactly one
+#                   password, keycloak-bind's (scripts/ldap-acl.sh).
+
+dn: ou=people,dc=tidewell,dc=lab
+objectClass: organizationalUnit
+ou: people
+
+dn: ou=groups,dc=tidewell,dc=lab
+objectClass: organizationalUnit
+ou: groups
+
+dn: ou=system,dc=tidewell,dc=lab
+objectClass: organizationalUnit
+ou: system
+
+dn: uid=saskia,ou=people,dc=tidewell,dc=lab
+objectClass: inetOrgPerson
+uid: saskia
+cn: Saskia
+sn: Platform
+givenName: Saskia
+mail: saskia@tidewell.example
+
+dn: uid=teun,ou=people,dc=tidewell,dc=lab
+objectClass: inetOrgPerson
+uid: teun
+cn: Teun
+sn: Bookings
+givenName: Teun
+mail: teun@tidewell.example
+
+dn: cn=platform,ou=groups,dc=tidewell,dc=lab
+objectClass: groupOfNames
+cn: platform
+member: uid=saskia,ou=people,dc=tidewell,dc=lab
+
+dn: cn=bookings,ou=groups,dc=tidewell,dc=lab
+objectClass: groupOfNames
+cn: bookings
+member: uid=teun,ou=people,dc=tidewell,dc=lab
+
+dn: cn=keycloak-bind,ou=system,dc=tidewell,dc=lab
+objectClass: inetOrgPerson
+cn: keycloak-bind
+sn: system
+description: Keycloak LDAP federation, read only. Rotated by Vault from act 4.
+
+dn: cn=vault-rotator,ou=system,dc=tidewell,dc=lab
+objectClass: inetOrgPerson
+cn: vault-rotator
+sn: system
+description: Vault LDAP secrets engine: writes keycloak-bind's userPassword only
+
+dn: cn=probe-bind,ou=system,dc=tidewell,dc=lab
+objectClass: inetOrgPerson
+cn: probe-bind
+sn: system
+description: make probe only: a scratch static role vault-rotator may rotate
