@@ -96,34 +96,36 @@ for check in "${checks[@]}"; do
   fi
   checked=$((checked + 1))
 done
-# ── The presenter in namespace tidewell (D13) ───────────────────────────────────
-# who|path|allow:cap or deny:cap. Saskia writes values and never reads one,
-# moves only the lab's two destinations, never touches the app or a policy.
-ns=$(vult_conf VULT_NAMESPACE)
+# ── The presenter in namespace tidewell (D14) ───────────────────────────────────
+# who|path|allow:cap or deny:cap: vult-presenter, through her own sign-in
+# (Keycloak, then jwt). She revokes one booking lease, rotates and syncs the
+# deploy token, sends Import's writes to kv ops/; she never reads another
+# value, mints the app's secret id, takes a database credential, or touches a
+# destination, the GitHub App or a policy.
 people_checks=(
-  "saskia|kv/data/parcel/delivery-api|allow:create"
-  "saskia|kv/data/parcel/delivery-api|allow:update"
-  "saskia|kv/data/parcel/delivery-api|allow:read"
-  "saskia|kv/data/parcel/smtp-relay|deny:read"
-  "saskia|kv/data/parcel/label-printer|deny:read"
-  "saskia|kv/data/other/x|deny:create"
-  "saskia|kv/metadata/parcel/delivery-api|allow:read"
-  "saskia|kv/metadata/parcel/delivery-api|deny:delete"
+  "saskia|sys/leases/revoke/database/creds/booking/x|allow:update"
+  "saskia|sys/leases/revoke/database/creds/other/x|deny:update"
+  "saskia|sys/leases/revoke-prefix/database/creds/booking|deny:update"
+  "saskia|sys/leases/lookup|allow:update"
+  "saskia|kv/data/ci/deploy-token|allow:update"
+  "saskia|kv/data/ci/deploy-token|allow:read"
+  "saskia|kv/data/ops/harbour-feed|allow:create"
+  "saskia|kv/data/ops/harbour-feed|deny:read"
+  "saskia|kv/data/permits/rebook/x|deny:read"
   "saskia|sys/sync/destinations/gh/tidewell-github/associations/set|allow:update"
-  "saskia|sys/sync/destinations/aws-sm/tidewell-localstack/associations/remove|allow:update"
   "saskia|sys/sync/destinations/gh/tidewell-github|deny:update"
-  "saskia|sys/sync/destinations/gh/tidewell-github|deny:delete"
-  "saskia|sys/sync/destinations/gh/other/associations/set|deny:update"
   "saskia|sys/sync/github-apps/vaultsyncdemo|deny:read"
+  "saskia|auth/approle/role/booking/secret-id|deny:update"
+  "saskia|database/creds/booking|deny:read"
+  "saskia|transit/sign/obo|deny:update"
   "saskia|sys/policies/acl/vult-presenter|deny:update"
-  "saskia|auth/userpass/users/saskia|deny:update"
 )
 vault_cluster
+ns=$(vult_conf VULT_NAMESPACE)
 for check in "${people_checks[@]}"; do
   IFS='|' read -r who path expect <<<"$check"
-  # The presenter's Vault login (Keycloak -> jwt) arrives with the people
-  # phase, which writes .build/people.json; until then these rows are skipped.
-  if [ ! -s "$BUILD_DIR/people.json" ] || [ ! -s "$VULT_ROOT/.secrets/people/$who" ]; then skipped=$((skipped + 1)); continue; fi
+  # Her password exists once make identity-up ran; before that, skipped.
+  if [ ! -s "$VULT_ROOT/.secrets/people/$who" ]; then skipped=$((skipped + 1)); continue; fi
   person_login "$who" || { fails=$((fails + 1)); checked=$((checked + 1)); continue; }
   tok=$VAULT_TOKEN
   unset VAULT_TOKEN

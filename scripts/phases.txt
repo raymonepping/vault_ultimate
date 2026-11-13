@@ -20,5 +20,5 @@ ansible people          # pending 02
 ansible before-estate
 make    workload-up
 ansible canary
-make    app-up          # pending 08
-ansible validate        # pending 05
+make    app-up
+ansible validate

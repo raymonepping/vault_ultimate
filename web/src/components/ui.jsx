@@ -1,6 +1,5 @@
 // components/ui.jsx: small shared pieces (vault_dance, vault_codex).
-import { createContext, useContext, useEffect, useRef, useState } from 'react';
-import { call } from '../api.js';
+import { createContext, useContext, useEffect, useRef } from 'react';
 import { X, LogIn } from 'lucide-react';
 
 // The signed-in person (GET /api/session), plus
@@ -38,51 +37,23 @@ export function ErrorNotice({ error, title }) {
   );
 }
 
-// The presenter signs in as Saskia (D13). The password goes to the API, which
-// logs her in to Vault and keeps the token; the browser keeps only a session
-// cookie. make people-copy-password puts it on the clipboard.
+// Saskia signs in through Keycloak (D14): the console sends her to
+// Keycloak's own form; the API keeps her Vault token, the browser only a
+// session cookie. A failed sign-in comes back as ?signin=<reason>.
 export function SignInNotice() {
-  const { refresh } = useAuth();
-  const [user, setUser] = useState('saskia');
-  const [password, setPassword] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState(null);
-  const submit = async (e) => {
-    e.preventDefault();
-    setBusy(true);
-    setError(null);
-    try {
-      await call('Sign in', '/api/session', { method: 'POST', body: { username: user, password } });
-      setPassword('');
-      refresh();
-    } catch (err) {
-      setError(err);
-    } finally {
-      setBusy(false);
-    }
-  };
+  const reason = new URLSearchParams(window.location.search).get('signin');
   return (
     <section className="vg-card signin-notice" aria-labelledby="signin-h">
       <h3 id="signin-h">Sign in as Saskia</h3>
       <p>
-        Saskia Moreau signs in with her own Vault login. Every import, sync and rotation on this console runs as her, so Vault's audit log names her. Password: <code className="mono">make people-copy-password</code>.
+        Saskia, the platform engineer, signs in through Keycloak; the console trades that for her own Vault token, so every act, revoke and rotation runs as her and Vault&apos;s audit log names her. Password: <code className="mono">make people-copy-password</code>.
       </p>
-      <form className="signin-form" onSubmit={submit}>
-        <label className="form-field" htmlFor="signin-user">
-          <span>User</span>
-          <input id="signin-user" name="username" autoComplete="username" value={user} onChange={(e) => setUser(e.target.value)} />
-        </label>
-        <label className="form-field" htmlFor="signin-pw">
-          <span>Password</span>
-          <input id="signin-pw" name="password" type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} />
-        </label>
-        <button type="submit" className="primary-button" disabled={busy || !password}>
-          <LogIn size={14} aria-hidden="true" /> {busy ? 'Asking Vault…' : 'Sign in'}
-        </button>
-      </form>
-      {error && (
+      <a className="primary-button" href="/auth/login">
+        <LogIn size={14} aria-hidden="true" /> Sign in with Keycloak
+      </a>
+      {reason && (
         <p className="inline-notice error" role="alert">
-          {error.message}
+          {reason}
         </p>
       )}
     </section>

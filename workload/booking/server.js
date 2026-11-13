@@ -24,6 +24,7 @@ const PUBLIC_URL = process.env.BOOKING_PUBLIC_URL || 'https://localhost:14202';
 const KC_PUBLIC = process.env.KEYCLOAK_PUBLIC || 'https://localhost:14203/realms/tidewell';
 const KC_INTERNAL = process.env.KEYCLOAK_INTERNAL || 'https://keycloak:8443/realms/tidewell';
 const CLIENT_ID = 'tidewell-booking';
+const TIDE_AGENT = process.env.TIDE_AGENT_URL || 'http://tide-agent:8080';
 const STAFF_GROUP = 'bookings';
 const SESSION_IDLE = 3600 * 1000;
 const TLS = {
@@ -107,7 +108,7 @@ async function who(req) {
     const s = sessions.get(sid);
     if (Date.now() < s.idleUntil && Date.now() / 1000 < s.exp + 3600) {
       s.idleUntil = Date.now() + SESSION_IDLE;
-      return { kind: 'staff', user: s.user, groups: s.groups, via: 'session', session: s };
+      return { kind: 'staff', user: s.user, groups: s.groups, via: 'session', session: s, exp: s.exp };
     }
     sessions.delete(sid);
   }
@@ -125,11 +126,11 @@ async function who(req) {
       return null;
     }
     if (header.typ === 'at+jwt' && delegation) {
-      const d = await delegation.check(token).catch(() => null);
+      const d = delegation.check(token);
       return d ? { kind: 'agent', user: 'tide-agent', via: 'delegation', ...d } : null;
     }
     const c = await verifyKeycloak(token, { audience: 'tidewell-vault' }).catch(() => null);
-    return c ? { kind: 'staff', user: c.preferred_username, groups: c.groups || [], via: 'bearer', token } : null;
+    return c ? { kind: 'staff', user: c.preferred_username, groups: c.groups || [], via: 'bearer', token, exp: c.exp } : null;
   }
   return null;
 }
@@ -154,25 +155,45 @@ function login(res) {
   send(res, 302, '', { Location: u.toString() });
 }
 
+// Keycloak's token endpoint. Before act 4 the client authenticates with the
+// client secret from booking.env; from act 4 with the site's own one-hour
+// Vault certificate over mutual TLS (client-x509): no secret anywhere.
+function keycloakToken(form) {
+  const body = new URLSearchParams(form);
+  const mtls = !creds.oidcSecret && currentTls.src === 'vault-agent';
+  if (creds.oidcSecret) body.set('client_secret', creds.oidcSecret);
+  else if (!mtls) return Promise.reject(Object.assign(new Error('no client credential for Keycloak'), { status: 503 }));
+  return new Promise((resolve, reject) => {
+    const r = https.request(new URL(`${KC_INTERNAL}/protocol/openid-connect/token`), {
+      method: 'POST', timeout: 8000, headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      ...(mtls ? { cert: currentTls.cert, key: currentTls.key } : {}),
+    }, (res) => {
+      let d = '';
+      res.on('data', (c) => (d += c));
+      res.on('end', () => {
+        let json = {};
+        try {
+          json = JSON.parse(d);
+        } catch {
+          json = {};
+        }
+        resolve({ ok: res.statusCode < 300, status: res.statusCode, json });
+      });
+    });
+    r.on('timeout', () => r.destroy(new Error('Keycloak did not answer in 8 s')));
+    r.on('error', reject);
+    r.end(body.toString());
+  });
+}
+
 async function callback(req, res, url) {
   const state = url.searchParams.get('state');
   const p = state && pending.get(state);
   pending.delete(state);
   if (!p || Date.now() > p.until) return fail(res, 400, 'sign-in expired, start again');
-  if (!creds.oidcSecret) return fail(res, 503, 'no client credential for Keycloak');
-  const ac = new AbortController();
-  const t = setTimeout(() => ac.abort(), 8000);
-  let tok;
-  try {
-    const r = await fetch(`${KC_INTERNAL}/protocol/openid-connect/token`, {
-      method: 'POST', signal: ac.signal, headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({ grant_type: 'authorization_code', code: url.searchParams.get('code') || '', redirect_uri: `${PUBLIC_URL}/auth/callback`, client_id: CLIENT_ID, client_secret: creds.oidcSecret, code_verifier: p.verifier }),
-    });
-    tok = await r.json();
-    if (!r.ok) return fail(res, 401, `Keycloak refused the sign-in: ${tok.error || r.status}`);
-  } finally {
-    clearTimeout(t);
-  }
+  const r = await keycloakToken({ grant_type: 'authorization_code', code: url.searchParams.get('code') || '', redirect_uri: `${PUBLIC_URL}/auth/callback`, client_id: CLIENT_ID, code_verifier: p.verifier });
+  const tok = r.json;
+  if (!r.ok) return fail(res, 401, `Keycloak refused the sign-in: ${tok.error || r.status}`);
   const id = await verifyKeycloak(tok.id_token, { audience: CLIENT_ID }).catch((e) => ({ error: e.message }));
   if (id.error || id.nonce !== p.nonce) return fail(res, 401, 'the ID token did not verify');
   const sid = b64u(randomBytes(32));
@@ -196,7 +217,9 @@ async function route(req, res, url) {
     } catch {
       database = 'down';
     }
-    return send(res, database === 'up' ? 200 : 503, { ok: database === 'up', database, credential: db.source(), tls: currentTls.src });
+    // The lease id names the app's current credential (act 6: the one to
+    // revoke); it is not a credential, and the username and password stay in.
+    return send(res, database === 'up' ? 200 : 503, { ok: database === 'up', database, credential: db.source(), lease: creds.database?.lease_id ?? null, tls: currentTls.src });
   }
   if (m === 'GET' && path === '/auth/login') return login(res);
   if (m === 'GET' && path === '/auth/callback') return callback(req, res, url);
@@ -256,7 +279,8 @@ async function route(req, res, url) {
   }
   if (m === 'POST' && (mm = path.match(/^\/api\/crossings\/([a-z0-9-]{3,20})\/rebook$/))) {
     const from = mm[1];
-    if (!(isStaff(who_) || (who_.kind === 'agent' && allows(who_, 'rebook', from)))) return fail(res, 403, 'not allowed to rebook this crossing');
+    const ok = isStaff(who_) || (who_.kind === 'agent' && (await permit(who_, 'rebook', from)));
+    if (!ok) return fail(res, 403, `not allowed to rebook this crossing${who_.answer ? ` (${who_.answer})` : ''}`);
     const to = String((await readJson(req)).to || '');
     const moved = await db.tx(async (c) => {
       const x = await c.query(`select id, seats, status from crossings where id = any($1) for update`, [[from, to]]);
@@ -272,7 +296,8 @@ async function route(req, res, url) {
     return send(res, 200, { from, to, moved });
   }
   if (m === 'POST' && (mm = path.match(/^\/api\/crossings\/([a-z0-9-]{3,20})\/cancel-all$/))) {
-    if (!(isStaff(who_) || (who_.kind === 'agent' && allows(who_, 'cancel', mm[1])))) return fail(res, 403, 'not allowed to cancel bookings on this crossing');
+    const ok = isStaff(who_) || (who_.kind === 'agent' && (await permit(who_, 'cancel', mm[1])));
+    if (!ok) return fail(res, 403, `not allowed to cancel bookings on this crossing${who_.answer ? ` (${who_.answer})` : ''}`);
     const r = await db.query(`update bookings set status = 'cancelled', updated_at = now(), updated_by = $2 where crossing_id = $1 and status <> 'cancelled' returning id`, [mm[1], `${who_.user} (${who_.via})`]);
     log({ msg: 'cancelled bookings', crossing: mm[1], count: r.rowCount, by: who_.user, via: who_.via });
     return send(res, 200, { crossing: mm[1], cancelled: r.rowCount });
@@ -280,10 +305,13 @@ async function route(req, res, url) {
   if (m === 'POST' && (mm = path.match(/^\/api\/bookings\/(\d{1,9})\/cancel$/))) {
     const r0 = await db.query(`select crossing_id from bookings where id = $1`, [Number(mm[1])]);
     if (!r0.rowCount) return fail(res, 404, 'no such booking');
-    if (!(isStaff(who_) || (who_.kind === 'agent' && allows(who_, 'cancel', r0.rows[0].crossing_id)))) return fail(res, 403, 'not allowed to cancel this booking');
+    const ok = isStaff(who_) || (who_.kind === 'agent' && (await permit(who_, 'cancel', r0.rows[0].crossing_id)));
+    if (!ok) return fail(res, 403, `not allowed to cancel this booking${who_.answer ? ` (${who_.answer})` : ''}`);
     const r = await db.query(`update bookings set status = 'cancelled', updated_at = now(), updated_by = $2 where id = $1 and status <> 'cancelled' returning id`, [Number(mm[1]), `${who_.user} (${who_.via})`]);
     return send(res, 200, { booking: Number(mm[1]), cancelled: r.rowCount === 1 });
   }
+  if (m === 'POST' && path === '/api/agent/ask') return askAgent(req, res, who_, '/ask');
+  if (m === 'POST' && path === '/api/agent/act') return askAgent(req, res, who_, '/act');
   if (path === '/api/notes') {
     if (!isStaff(who_)) return fail(res, 403, 'staff only');
     if (m === 'GET') {
@@ -301,11 +329,41 @@ async function route(req, res, url) {
   return fail(res, 404, 'not found');
 }
 
-// allows(agent, action, crossing): the static key may do anything (the
-// before estate's problem); a delegation names one action on one crossing.
-function allows(p, action, crossing) {
+// permit(agent, action, crossing): the static key may do anything (the
+// before estate's problem). A delegation is Vault's call: the token reads the
+// action's permit, and Vault's answer (verbatim) is kept on the caller for
+// the log and the refusal.
+async function permit(p, action, crossing) {
   if (p.via === 'static-key') return true;
-  return p.action === action && p.crossing === crossing;
+  if (p.via !== 'delegation' || !delegation) return false;
+  const r = await delegation.authorize(p, action, crossing);
+  p.answer = r.answer;
+  log({ msg: 'delegated action', action, crossing, for: p.subject, jti: p.jti, vault: r.answer });
+  return r.ok;
+}
+
+// The clerk asks the agent (act 5 on: with a delegation for one crossing's
+// rebook; before it, the agent uses its own static key). /api/agent/act is
+// the same without the model: the rehearsal's scripted overreach.
+async function askAgent(req, res, who_, path) {
+  if (!isStaff(who_)) return fail(res, 403, 'staff only');
+  const b = await readJson(req);
+  const crossing = String(b.crossing || b.from || '');
+  const headers = { 'Content-Type': 'application/json' };
+  if (!creds.agentKey) {
+    if (!delegation) return fail(res, 503, 'no delegation available');
+    headers.Authorization = `Bearer ${await delegation.issue({ user: who_.user, exp: who_.exp }, 'rebook', crossing)}`;
+  }
+  const ac = new AbortController();
+  const t = setTimeout(() => ac.abort(), 60000);
+  try {
+    const r = await fetch(`${TIDE_AGENT}${path}`, { method: 'POST', headers, signal: ac.signal, body: JSON.stringify(path === '/ask' ? { text: String(b.text || '').slice(0, 500) } : { action: b.action, from: b.from, to: b.to }) });
+    const out = await r.json().catch(() => ({}));
+    log({ msg: 'asked the agent', by: who_.user, path, status: r.status, via: headers.Authorization ? 'delegation' : 'static-key' });
+    return send(res, r.status, { ...out, delegated: !!headers.Authorization });
+  } finally {
+    clearTimeout(t);
+  }
 }
 
 // ── Start, and follow the credential files ──────────────────────────────────

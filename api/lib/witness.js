@@ -32,6 +32,12 @@ const readText = (p) => {
 };
 const now = () => new Date().toISOString();
 const msg = (e) => String(e?.message || e).replace(/\s+/g, ' ').trim();
+// A target that did not answer says nothing about the credential: unknown
+// (works null), never "refused" (prompt 08).
+const NET = /ECONNREFUSED|ENOTFOUND|EHOSTUNREACH|ETIMEDOUT|ECONNRESET|EAI_AGAIN|no answer within|timed out|did not answer|Connection terminated unexpectedly|fetch failed/i;
+export const failure = (e, tried) => (NET.test(`${e?.code || ''} ${e?.cause?.code || ''} ${msg(e)}`)
+  ? { works: null, tried, answer: `unknown, the target did not answer: ${msg(e)}`, lifetime: null }
+  : { works: false, tried, answer: msg(e), lifetime: null });
 
 function within(ms, p, what) {
   let t;
@@ -61,7 +67,7 @@ async function postgresLogin(c, secret) {
     const never = v === null || v === 'infinity';
     return { works: true, tried, answer: `logged in as ${r.rows[0].who}; VALID UNTIL ${v ?? 'not set'}`, lifetime: never ? { never: true, source: 'pg_roles.rolvaliduntil' } : { until: new Date(v).toISOString(), source: 'pg_roles.rolvaliduntil' } };
   } catch (e) {
-    return { works: false, tried, answer: msg(e), lifetime: null };
+    return failure(e, tried);
   } finally {
     await client.end().catch(() => {});
   }
@@ -86,8 +92,8 @@ function ldapBindTry(c, dn, secret) {
         resolve({ works: false, tried, answer: msg(e), lifetime: null });
       }
     });
-    s.on('error', (e) => resolve({ works: false, tried, answer: msg(e), lifetime: null }));
-  }), 'LDAP').catch((e) => ({ works: false, tried, answer: msg(e), lifetime: null }));
+    s.on('error', (e) => resolve(failure(e, tried)));
+  }), 'LDAP').catch((e) => failure(e, tried));
 }
 
 async function oidcClientCredentials(c, secret) {
@@ -104,7 +110,7 @@ async function oidcClientCredentials(c, secret) {
     const works = res.ok || (j.error && j.error !== 'invalid_client');
     return { works, tried, answer: res.ok ? `${res.status}: token issued` : `${res.status} ${j.error}${j.error_description ? `: ${j.error_description}` : ''}`, lifetime: works ? { never: true, source: 'Keycloak client secrets do not expire' } : null };
   } catch (e) {
-    return { works: false, tried, answer: msg(e), lifetime: null };
+    return failure(e, tried);
   }
 }
 
@@ -115,7 +121,7 @@ async function bookingCall(c, method, path, headers, tried, judge) {
     const works = judge(res, j);
     return { works, tried, answer: `${res.status} ${text ? text.slice(0, 160) : '(no body)'}`, lifetime: works ? { never: true, source: 'a static value, never rotated' } : null };
   } catch (e) {
-    return { works: false, tried, answer: msg(e), lifetime: null };
+    return failure(e, tried);
   }
 }
 
@@ -156,7 +162,7 @@ async function tlsHandshakeOcsp(c, certPem, keyPem) {
   try {
     o = await ocspOf(leafPem, issuerPem);
   } catch (e) {
-    return { works: false, tried, answer: `${hand}; OCSP not answered: ${msg(e)}`, lifetime: null };
+    return { works: null, tried, answer: `unknown: ${hand}; OCSP not answered: ${msg(e)}`, lifetime: null };
   }
   const until = new Date(leaf.validTo).toISOString();
   const works = o.status === 'good' && Date.parse(until) > Date.now();
@@ -228,14 +234,15 @@ async function copies(c, inventory, story, byId) {
       const d = await ls.describe(name).catch((e) => ({ error: msg(e) }));
       const a = cp.id === 'localstack-copy' ? synced(assoc.aws) : null;
       const has = !!d && !d.error && !d.deleted;
-      const where = d?.error ? `LocalStack did not answer: ${d.error}` : has ? `LocalStack has ${name}${d.tags['hashicorp:vault'] ? ' (tag hashicorp:vault)' : ''}, changed ${d.changed}` : `LocalStack has no ${name}`;
+      const where = d?.error ? `LocalStack did not answer: ${d.error}` : has ? `LocalStack has ${name}${Object.hasOwn(d.tags, 'hashicorp:vault') ? ' (tag hashicorp:vault)' : ''}, changed ${d.changed}` : `LocalStack has no ${name}`;
+      // Vault tags its copy hashicorp:vault with an empty value (measured).
       // Unreachable is not "gone": the copy counts until LocalStack says so.
       Object.assign(row, { exists: has || !!d?.error, managed: !!a, answer: `${where}${a ? `; Vault syncs it (${a.sync_status}, ${a.updated_at})` : ''}` });
     }
     // A copy is unmanaged while it exists, Vault does not keep it current,
     // and what it holds still works (a legacy value is not tried: it counts
     // while it exists).
-    row.unmanaged = row.exists && !row.managed && (holds ? holds.works : true);
+    row.unmanaged = row.exists && !row.managed && (holds ? holds.works !== false : true);
     out.push(row);
   }
   return out;
@@ -271,15 +278,33 @@ export async function witness(c) {
       rows.push({ ...base, works: false, tried: item.test, answer: 'no value in the lab record', fingerprint: null, lifetime: null, at: now() });
       continue;
     }
-    const r = await tries[item.test](value).catch((e) => ({ works: false, tried: item.test, answer: msg(e), lifetime: null }));
+    const r = await tries[item.test](value).catch((e) => failure(e, item.test));
     rows.push({ ...base, ...r, fingerprint: fp(value), at: now() });
   }
   const byId = Object.fromEntries(rows.map((r) => [r.id, r]));
+  // The residual after a rotation (act 6): the before estate's value is the
+  // inventory row; the value Vault holds now (and syncs to every copy) is
+  // tried too and reported beside it, so the residual stays visible.
+  const dep = byId['ci-deploy-token'];
+  const kv = await call(c.token, 'GET', ns(`kv/data/${story.deploy.kv_name}`)).catch(() => ({ ok: false }));
+  const now_ = kv.ok ? kv.json?.data?.data?.value : null;
+  if (dep && now_ && fp(now_) !== dep.fingerprint) {
+    const r = await tries['booking-deploy-check'](now_);
+    dep.current = { fingerprint: fp(now_), works: r.works, answer: r.answer, source: `Vault kv ${story.deploy.kv_name} v${kv.json.data.metadata.version}`, at: now() };
+  }
   // Where the before estate still points: the .env files the apps read.
   byId['booking-db-password'].in_estate_file = !!envValue(bookingEnv, 'DB_PASSWORD');
   byId['tide-agent-api-key'].in_estate_file = !!envValue(agentEnv, 'AGENT_API_KEY');
-  byId['booking-db-password'].replaced_by = await bookingLeases(c);
-  byId['booking-tls-key'].replaced_by = { served: await servedCertificate(c) };
+  // What replaced a refused credential, with the lifetime its target reports.
+  const leases = await bookingLeases(c);
+  const lastLease = (leases.leases || []).map((l) => l.expire_time).sort().at(-1);
+  if (lastLease && !byId['booking-db-password'].works) leases.lifetime = { until: new Date(lastLease).toISOString(), source: 'Vault lease expire_time (database/creds/booking)' };
+  byId['booking-db-password'].replaced_by = leases;
+  const served = await servedCertificate(c);
+  const year = byId['booking-tls-key'];
+  const tlsReplaced = { served };
+  if (served.serial && served.serial !== year.serial && !year.works) tlsReplaced.lifetime = { until: served.not_after, source: 'the certificate the site serves (notAfter)' };
+  year.replaced_by = tlsReplaced;
   const extras = [await secretZero(c)];
   const cps = await copies(c, inventory, story, byId);
   return { at: now(), act: c.act, credentials: rows, copies: cps, extras, ...summarise({ credentials: rows, copies: cps }) };

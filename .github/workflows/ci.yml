@@ -2,7 +2,8 @@ name: CI
 
 # The checks that need no running stack (make verify and the Playwright suite
 # need Vault Enterprise with a licence; they run on the Mac). Same commands as
-# locally: make test-unit (story-check, api, web), the console build, make lint.
+# locally: make test-unit (scripts, api, web, booking, tide-agent, runner),
+# the console build, make lint.
 on:
   push:
     branches: ["**"]
@@ -23,9 +24,24 @@ jobs:
           node-version: "24"
       - name: The story (story-check)
         run: node scripts/story-check.js && node --test scripts/*.test.js
-      - name: API unit tests (no dependencies)
+      - name: API dependencies (pg, for the witness)
+        working-directory: api
+        run: npm ci --omit=dev --no-audit --no-fund
+      - name: API unit tests (openssl makes the OCSP fixtures)
         working-directory: api
         run: npm test
+      - name: Booking app dependencies
+        working-directory: workload/booking
+        run: npm ci --omit=dev --no-audit --no-fund
+      - name: Booking app unit tests
+        working-directory: workload/booking
+        run: node --test test/*.test.js
+      - name: tide-agent unit tests (no dependencies)
+        working-directory: workload/tide-agent
+        run: node --test test/*.test.js
+      - name: Host runner unit tests (no dependencies)
+        working-directory: runner
+        run: node --test test/*.test.js
       - name: Console dependencies
         working-directory: web
         run: npm ci --no-audit --no-fund

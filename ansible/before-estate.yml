@@ -52,14 +52,15 @@
           register: manifest
           changed_when: "'VULT_CHANGED' in manifest.stderr"
 
-        - name: booking_app, the static credential (VALID UNTIL infinity)
+        - name: The static credential booking_app (VALID UNTIL infinity)
           ansible.builtin.command: "{{ psql }}"
           args:
             stdin: |
               DO $$
               BEGIN
                 IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'booking_app') THEN
-                  CREATE ROLE booking_app LOGIN PASSWORD '{{ lookup('ansible.builtin.file', w + '/booking-db-password') }}' VALID UNTIL 'infinity' IN ROLE booking_rw;
+                  CREATE ROLE booking_app LOGIN PASSWORD '{{ lookup('ansible.builtin.file', w + '/booking-db-password') }}'
+                    VALID UNTIL 'infinity' IN ROLE booking_rw;
                   RAISE NOTICE 'VULT_CHANGED booking_app created';
                 ELSIF {{ 'true' if reset else 'false' }} OR NOT (SELECT rolcanlogin FROM pg_roles WHERE rolname = 'booking_app') THEN
                   ALTER ROLE booking_app LOGIN PASSWORD '{{ lookup('ansible.builtin.file', w + '/booking-db-password') }}' VALID UNTIL 'infinity';
@@ -71,7 +72,7 @@
           changed_when: "'VULT_CHANGED' in role.stderr"
           no_log: true
 
-        - name: booking.env and tide-agent.env (the before estate's .env files)
+        - name: The before estate's .env files (booking.env and tide-agent.env)
           ansible.builtin.copy:
             dest: "{{ item.dest }}"
             mode: "0600"

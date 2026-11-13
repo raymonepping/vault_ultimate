@@ -63,13 +63,16 @@ export function personPassword(user: string): string {
   return fs.readFileSync(path.join(ROOT, '.secrets/people', user), 'utf8').trim();
 }
 
-/** The story, with the synthetic legacy values (the runner may know them; the console never shows them). */
+/** The story; its synthetic legacy values must never be served. */
 export const story = JSON.parse(fs.readFileSync(path.join(ROOT, 'config/story.json'), 'utf8'));
 export const legacyValues: string[] = story.legacy.map((l: { value: string }) => l.value);
 
-/** make stage-reset CONFIRM=yes: nothing imported, nothing synced, before and after the suite. */
+/** The act the lab is at (.build/act). */
+export const currentAct = (): number => Number(fs.existsSync(path.join(ROOT, '.build/act')) ? fs.readFileSync(path.join(ROOT, '.build/act'), 'utf8').trim() : '0') || 0;
+
+/** make stage-reset CONFIRM=yes (the act 0 baseline). */
 export function stageReset(): void {
-  execFileSync(path.join(ROOT, 'scripts/stage-reset.sh'), [], { env: { ...process.env, CONFIRM: 'yes' }, stdio: 'ignore', timeout: 180_000 });
+  execFileSync(path.join(ROOT, 'scripts/stage-reset.sh'), [], { env: { ...process.env, CONFIRM: 'yes' }, stdio: 'ignore', timeout: 300_000 });
 }
 
 /** A GET to the console: status and headers, TLS verified against the lab CA only. */

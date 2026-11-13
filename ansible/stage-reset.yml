@@ -28,8 +28,76 @@
     psql: podman exec -i vult-postgres gosu postgres psql -v ON_ERROR_STOP=1 -q -d tidewell
     destinations: [gh/tidewell-github, aws-sm/tidewell-localstack]
   tasks:
+    # ── Act 6 needs nothing here: the rotated deploy token goes with act 1's
+    #    KV paths, and before-estate pastes the before estate's value back.
+
+    # ── Act 5: the agent's registration, the permits, the schedule ──────────
+    - name: Is tide-agent registered?
+      ansible.builtin.uri:
+        url: "{{ v_ns }}/agent-registry/registration/display-name/tide-agent"
+        ca_path: "{{ vult_ca }}"
+        headers: { X-Vault-Token: "{{ v_token }}" }
+        status_code: [200, 400, 404]
+      register: reg
+      check_mode: false
+
+    - name: Deregister it (Terraform removes its entity next)
+      ansible.builtin.uri:
+        url: "{{ v_ns }}/agent-registry/registration/display-name/tide-agent"
+        method: DELETE
+        ca_path: "{{ vult_ca }}"
+        headers: { X-Vault-Token: "{{ v_token }}" }
+        status_code: [200, 204]
+      when: reg.status == 200
+      changed_when: true
+
+    - name: The permits go
+      ansible.builtin.uri:
+        url: "{{ v_ns }}/kv/metadata/permits/{{ item }}/d{{ story.weather_cancel.day }}-{{ story.weather_cancel.departure | replace(':', '') }}"
+        method: DELETE
+        ca_path: "{{ vult_ca }}"
+        headers: { X-Vault-Token: "{{ v_token }}" }
+        status_code: [204]
+      loop: [rebook, cancel]
+      changed_when: true
+
+    - name: The schedule and manifest start over (before-estate loads them again)
+      ansible.builtin.command: "{{ psql }}"
+      args:
+        stdin: "TRUNCATE bookings, passengers, crossings RESTART IDENTITY;"
+      changed_when: true
+
+    # ── Act 4: the before estate's bind password and client secret ──────────
+    - name: OpenLDAP takes keycloak-bind's old password back (as the directory admin)
+      ansible.builtin.command:
+        argv:
+          - podman
+          - exec
+          - vult-openldap
+          - sh
+          - -c
+          - >-
+            umask 077; tr -d '\n' </run/secrets/system/keycloak-bind >/tmp/.pw; tr -d '\n' </run/secrets/ldap-admin-password >/tmp/.apw;
+            ldappasswd -x -H ldap://localhost -D cn=admin,dc=tidewell,dc=lab -y /tmp/.apw
+            -T /tmp/.pw cn=keycloak-bind,ou=system,dc=tidewell,dc=lab; rc=$?; rm -f /tmp/.pw /tmp/.apw; exit $rc
+      changed_when: true
+
+    - name: Keycloak takes the old bind password and the booking client's secret back
+      ansible.builtin.shell: |
+        set -euo pipefail
+        # --no-deps: Keycloak runs already; without it, run starts identity-init again and leaves it behind.
+        VULT_SET_KEYCLOAK_BIND=1 VULT_SET_BOOKING_SECRET=1 "{{ vult_root }}/scripts/compose.sh" identity --profile init \
+          run --rm --no-deps --name vult-keycloak_bootstrap keycloak-bootstrap | grep -E '^\s*[*]'
+      args: { executable: /bin/bash }
+      changed_when: true
+
+    - name: Terraform may drop the static role at act 0
+      ansible.builtin.file:
+        path: "{{ vult_root }}/.build/ldap-connected"
+        state: absent
+
     # ── Acts 3 and 2: the app back on the static password ────────────────────
-    - name: booking_app logs in again (static password, VALID UNTIL infinity)
+    - name: The static role booking_app logs in again (VALID UNTIL infinity)
       ansible.builtin.command: "{{ psql }}"
       args:
         stdin: |
@@ -38,7 +106,7 @@
       changed_when: true
       no_log: true
 
-    - name: booking.env holds the database credential again
+    - name: The app's booking.env holds the database credential again
       ansible.builtin.lineinfile:
         path: "{{ w }}/booking.env"
         regexp: "^{{ item.key }}="
@@ -73,14 +141,18 @@
       check_mode: false
 
     # ── Act 1: Vault lets go of the copies; the KV paths go ──────────────────
+    # Before act 1 ever ran, Secrets Sync is not activated: Vault answers 403
+    # "the Secrets Sync feature is not activated" (measured), which means no
+    # association. Any other refusal still fails.
     - name: Each destination's associations
       ansible.builtin.uri:
         url: "{{ v_ns }}/sys/sync/destinations/{{ item }}/associations"
         ca_path: "{{ vult_ca }}"
         headers: { X-Vault-Token: "{{ v_token }}" }
-        status_code: [200, 404]
+        status_code: [200, 403, 404]
       loop: "{{ destinations }}"
       register: assoc
+      failed_when: assoc.status == 403 and 'not activated' not in (assoc.json.errors | default([]) | join(' '))
       check_mode: false
 
     # associated_secrets is a map keyed by association id: flatten it.
@@ -107,10 +179,11 @@
         url: "{{ v_ns }}/sys/sync/destinations/{{ item }}/associations"
         ca_path: "{{ vult_ca }}"
         headers: { X-Vault-Token: "{{ v_token }}" }
-        status_code: [200, 404]
+        status_code: [200, 403, 404]
       loop: "{{ destinations }}"
       register: left
-      until: left.status == 404 or (left.json.data.associated_secrets | default({}) | length) == 0
+      failed_when: left.status == 403 and 'not activated' not in (left.json.errors | default([]) | join(' '))
+      until: left.status != 200 or (left.json.data.associated_secrets | default({}) | length) == 0
       retries: 30
       delay: 2
       check_mode: false

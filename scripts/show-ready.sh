@@ -2,7 +2,7 @@
 # scripts/show-ready.sh (make show-ready): five minutes before the talk.
 # clock-sync, up, a fresh stage, verify, the console. One green line, or the
 # first failing check with its fix. verify ends with a rehearsal and a fresh
-# stage: nothing imported, nothing synced when the talk starts.
+# stage: act 0, every standing secret in place, when the talk starts.
 set -euo pipefail
 # shellcheck source=scripts/common.sh
 source "$(dirname -- "$0")/common.sh"
@@ -21,6 +21,6 @@ run "clock-sync" "make clock-sync (podman machine ssh must work)" ./scripts/cloc
 run "up" "make doctor" ./scripts/up.sh
 run "stage-reset" "make stage-reset CONFIRM=yes, then make doctor" env CONFIRM=yes ./scripts/stage-reset.sh
 run "verify" "make verify, then the command it names" ./scripts/verify.sh
-url="https://localhost:$(vult_conf VULT_PORT_WEB)/#/overview"
+url="https://localhost:$(vult_conf VULT_PORT_WEB)/#/scoreboard"
 [ "$(uname -s)" = Darwin ] && [ -z "${NO_OPEN:-}" ] && open "$url" || true
 printf '\033[32mshow-ready: green in %ss. The console is at %s. Break a leg.\033[0m\n' "$(($(date +%s) - t0))" "$url"

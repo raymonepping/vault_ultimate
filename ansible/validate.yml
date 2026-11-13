@@ -1,117 +1,101 @@
-# Phase 15 (ansible validate): read-only. Saskia signs in and holds exactly
-# vult-presenter (writes values, never reads one, moves only the two
-# destinations); the GitHub App and both destinations are in tidewell; LocalStack
-# holds the legacy secrets. Nothing here reads a secret value.
-- name: Validate the sync stage
+# validate (ansible, the last phase of make lab): read-only. Saskia signs in
+# the way she does on the console (Keycloak, then Vault's jwt auth) and her
+# own token's capabilities are exactly vult-presenter's on the paths that
+# matter: she may revoke one booking lease and rotate the deploy token, and
+# may not read a legacy value, mint the app's secret id or take a database
+# credential. The before estate's pieces are where the act says they are.
+# Nothing here reads or prints a secret value; her token is revoked at the end.
+- name: Validate the presenter and the estate
   hosts: localhost
   gather_facts: false
   vars:
     v_ns: "{{ vult_cluster_addr }}/v1/{{ vult_namespace }}"
-    v_token: "{{ lookup('ansible.builtin.file', vult_tokens_dir + '/ansible-platform') }}"
-    v_story: "{{ lookup('ansible.builtin.file', vult_root + '/config/story.json') | from_json }}"
-    v_secret: "{{ v_story.sync.secret }}"
+    story: "{{ lookup('ansible.builtin.file', vult_root + '/config/story.json') | from_json }}"
+    act_now: "{{ lookup('ansible.builtin.pipe', 'cat ' + vult_root + '/.build/act 2>/dev/null || echo 0') | trim | int }}"
+    # A list, not a dict: Ansible does not template a dict's keys.
+    expect:
+      - { path: "sys/leases/revoke/database/creds/booking/x", caps: [update] }
+      - { path: "kv/data/{{ story.rotate }}", caps: [create, read, update] }
+      - { path: "kv/data/{{ story.legacy[0].kv_name }}", caps: [create, update] }
+      - { path: "auth/approle/role/booking/secret-id", caps: [deny] }
+      - { path: "database/creds/booking", caps: [deny] }
+      - { path: "sys/sync/github-apps/x", caps: [deny] }
   tasks:
-    - name: Saskia signs in through userpass
+    - name: Saskia signs in to Keycloak (through the LDAP federation)
       ansible.builtin.uri:
-        url: "{{ v_ns }}/auth/userpass/login/saskia"
-        ca_path: "{{ vult_ca }}"
+        url: "{{ vult_keycloak_url }}/realms/tidewell/protocol/openid-connect/token"
         method: POST
-        body_format: json
+        ca_path: "{{ vult_ca }}"
+        body_format: form-urlencoded
         body:
-          password: "{{ lookup('ansible.builtin.file', vult_root + '/.secrets/people/saskia') }}"
-      register: v_ines
-      check_mode: false
+          grant_type: password
+          client_id: tidewell-cli
+          username: "{{ story.presenter.user }}"
+          password: "{{ lookup('ansible.builtin.file', vult_root + '/.secrets/people/' + story.presenter.user) | trim }}"
+      register: kc
       no_log: true
+      check_mode: false
 
-    - name: Her capabilities (her own token)
+    - name: Her own Vault token (jwt, role person)
+      ansible.builtin.uri:
+        url: "{{ v_ns }}/auth/jwt/login"
+        method: POST
+        ca_path: "{{ vult_ca }}"
+        body_format: json
+        body: { role: person, jwt: "{{ kc.json.access_token }}" }
+      register: login
+      no_log: true
+      check_mode: false
+
+    - name: She holds vult-presenter through her group, nothing more
+      ansible.builtin.assert:
+        that:
+          - login.json.auth.identity_policies == ['vult-presenter']
+          - login.json.auth.token_policies == ['default']
+        quiet: true
+
+    - name: Her capabilities on the paths that matter
       ansible.builtin.uri:
         url: "{{ v_ns }}/sys/capabilities-self"
-        ca_path: "{{ vult_ca }}"
         method: POST
-        headers: { X-Vault-Token: "{{ v_ines.json.auth.client_token }}" }
+        ca_path: "{{ vult_ca }}"
+        headers: { X-Vault-Token: "{{ login.json.auth.client_token }}" }
         body_format: json
-        body:
-          paths:
-            - "kv/data/{{ v_secret }}"
-            - kv/data/parcel/smtp-relay
-            - "kv/metadata/{{ v_secret }}"
-            - sys/sync/destinations/gh/tidewell-github/associations/set
-            - sys/sync/destinations/aws-sm/tidewell-localstack/associations/remove
-            - "sys/sync/github-apps/{{ vult_github.app }}"
-            - sys/sync/destinations/gh/tidewell-github
-      register: v_caps
-      check_mode: false
+        body: { paths: "{{ expect | map(attribute='path') | list }}" }
+      register: caps
       no_log: true
+      check_mode: false
 
-    - name: She reads only the secret she syncs (Vault requires it) and moves only associations
+    - name: Exactly as declared
       ansible.builtin.assert:
-        that:
-          - v_ines.json.auth.token_policies | sort == ['default', 'vult-presenter']
-          - v_caps.json.data['kv/data/' + v_secret] | sort == ['create', 'read', 'update']
-          - v_caps.json.data['kv/data/parcel/smtp-relay'] | sort == ['create', 'update']
-          - "'read' in v_caps.json.data['kv/metadata/' + v_secret]"
-          - v_caps.json.data['sys/sync/destinations/gh/tidewell-github/associations/set'] == ['update']
-          - v_caps.json.data['sys/sync/destinations/aws-sm/tidewell-localstack/associations/remove'] == ['update']
-          - v_caps.json.data['sys/sync/github-apps/' + vult_github.app] == ['deny']
-          - v_caps.json.data['sys/sync/destinations/gh/tidewell-github'] == ['read']
+        that: "(caps.json.data[item.path] | sort) == (item.caps | sort)"
+        fail_msg: "{{ item.path }}: {{ caps.json.data[item.path] | default('none') }}, expected {{ item.caps }}"
         quiet: true
+      loop: "{{ expect }}"
+      loop_control: { label: "{{ item.path }}" }
 
-    - name: Revoke the validation login
+    - name: Her token is done
       ansible.builtin.uri:
         url: "{{ v_ns }}/auth/token/revoke-self"
-        ca_path: "{{ vult_ca }}"
         method: POST
-        headers: { X-Vault-Token: "{{ v_ines.json.auth.client_token }}" }
+        ca_path: "{{ vult_ca }}"
+        headers: { X-Vault-Token: "{{ login.json.auth.client_token }}" }
         status_code: [204]
-      check_mode: false
       changed_when: false
       no_log: true
-
-    - name: The GitHub App and both destinations
-      ansible.builtin.uri:
-        url: "{{ v_ns }}/sys/sync/{{ item }}"
-        ca_path: "{{ vult_ca }}"
-        headers: { X-Vault-Token: "{{ v_token }}" }
-      loop:
-        - "github-apps/{{ vult_github.app }}"
-        - destinations/gh/tidewell-github
-        - destinations/aws-sm/tidewell-localstack
-      register: v_sync
       check_mode: false
 
-    - name: The app is masked; the LocalStack destination keeps its narrow allowlist
-      ansible.builtin.assert:
-        that:
-          - v_sync.results[0].json.data.private_key == '*****'
-          - v_sync.results[1].json.data.connection_details.installation_id | string == vult_github.installation_id | string
-          - v_sync.results[2].json.data.connection_details.allowed_ipv4_addresses == [vult_localstack.ip + '/32']
-        quiet: true
-
-    - name: LocalStack holds each legacy secret
-      ansible.builtin.uri:
-        url: "{{ vult_localstack.url }}/"
-        ca_path: "{{ vult_ca }}"
-        method: POST
-        headers:
-          X-Amz-Target: secretsmanager.DescribeSecret
-          Content-Type: application/x-amz-json-1.1
-          Authorization: >-
-            AWS4-HMAC-SHA256 Credential=test/20260101/{{ vult_localstack.region }}/secretsmanager/aws4_request,
-            SignedHeaders=host, Signature=0
-        body: "{{ {'SecretId': item.aws_name} | to_json }}"
-        return_content: true
-      # Names and labels only: a failing item is printed, a value never is.
-      loop: "{{ v_story.legacy | items2dict(key_name='aws_name', value_name='labels') | dict2items(key_name='aws_name', value_name='labels') }}"
-      loop_control:
-        label: "{{ item.aws_name }}"
-      register: v_legacy
+    - name: Where the act says the static password is (booking.env)
+      ansible.builtin.command: "grep -c '^DB_PASSWORD=' {{ vult_root }}/.secrets/workload/booking.env"
+      register: dbline
+      changed_when: false
+      failed_when: (dbline.stdout | int) != (1 if (act_now | int) < 2 else 0)
       check_mode: false
 
-    - name: Each carries its owner tag
-      ansible.builtin.assert:
-        # uri parses only application/json; LocalStack answers x-amz-json-1.1.
-        that: ((item.content | from_json).Tags | items2dict(key_name='Key', value_name='Value')).owner == item.item.labels.owner
-        quiet: true
-      loop: "{{ v_legacy.results }}"
-      loop_control:
-        label: "{{ item.item.aws_name }}"
+    - name: The booking app answers, on the credential the act says
+      ansible.builtin.uri:
+        url: "{{ vult_booking_url }}/healthz"
+        ca_path: "{{ vult_ca }}"
+      register: health
+      failed_when: health.json.database != 'up' or health.json.credential != ('booking.env' if (act_now | int) < 2 else 'vault-agent')
+      check_mode: false

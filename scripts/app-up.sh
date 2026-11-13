@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# scripts/app-up.sh: phase 14 (make app-up). Build images if missing, start
-# the app stack, wait until the API answers.
+# scripts/app-up.sh (make app-up): the console. Build images if missing, start
+# the host runner (runner/server.js: the waves run on the host), the app
+# stack, and wait until the API answers.
 set -euo pipefail
 # shellcheck source=scripts/common.sh
 source "$(dirname -- "$0")/common.sh"
@@ -14,7 +15,8 @@ for t in api web; do
     "$VULT_ROOT/scripts/app-build.sh" "$t"
   fi
 done
-mkdir -p "$BUILD_DIR/github" # the API mounts it (make github-evidence fills it)
+mkdir -p "$BUILD_DIR/github" # make github-evidence fills it
+"$VULT_ROOT/scripts/runner.sh" start
 "$VULT_ROOT/scripts/compose.sh" app up -d
 for _ in $(seq 1 40); do
   curl -sf --cacert "$VULT_ROOT/vault-tls/ca-chain.pem" "https://localhost:$(vult_conf VULT_PORT_WEB)/api/healthz" >/dev/null 2>&1 && break

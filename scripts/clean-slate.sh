@@ -26,6 +26,7 @@ if [ -s .secrets/vault/tokens/ansible-platform ] && [ "$(vult_container_state "$
   ./scripts/ansible.sh stage-reset >"$BUILD_DIR/clean-slate-unsync.log" 2>&1 ||
     echo "clean-slate: could not remove the associations (.build/clean-slate-unsync.log); check GitHub for TIDEWELL_ secrets"
 fi
+"$VULT_ROOT/scripts/runner.sh" stop >/dev/null 2>&1 || true
 for stack in app workload cloud ai data identity vault seal; do
   # ai's models volume is external, so down -v leaves it in place.
   "$VULT_ROOT/scripts/compose.sh" "$stack" down -v --remove-orphans 2>/dev/null || true
@@ -40,5 +41,12 @@ for p in .secrets/vault/seal-init.json .secrets/vault/vault-init.json .secrets/v
   .secrets/terraform .secrets/people; do
   [ -e "$p" ] && mv "$p" "$legacy/"
 done
+# The lab's own act records describe the cluster that is gone: a rebuild
+# starts at act 0. The witness history and act 6's records are archived.
+mkdir -p "$BUILD_DIR/witness/archive"
+for d in "$BUILD_DIR/witness/history" "$BUILD_DIR/act6"; do
+  [ ! -d "$d" ] || mv "$d" "$BUILD_DIR/witness/archive/clean-slate-$(date -u +%Y%m%dT%H%M%SZ)-$(basename "$d")"
+done
+rm -f "$BUILD_DIR/act" "$BUILD_DIR/ldap-connected" "$BUILD_DIR"/acts/act-*.json "$BUILD_DIR/agent/delivery.json"
 echo "clean-slate: containers, volumes and network removed; credentials moved to $legacy"
 echo "clean-slate: start again with make lab"

@@ -1,0 +1,257 @@
+# act-4 (ansible, make act-4): people and the bind account. Staff already
+# sign in through Keycloak; this act removes the last static passwords behind
+# that sign-in.
+#
+#   1. Vault's LDAP engine connects as cn=vault-rotator (its password is
+#      Ansible's to write), .build/ldap-connected, Terraform again: the static
+#      role keycloak-bind (probe Q5)
+#   2. rotate now, read the new password (never printed) and push it into
+#      Keycloak's federation through the admin REST API, then Keycloak's own
+#      test binds with it, and Teun signs in through the federation
+#   3. the booking client stops using its secret: Keycloak takes the site's
+#      one-hour Vault certificate instead (client-x509, mutual TLS), the
+#      secret leaves booking.env; a client-credentials try over mTLS proves
+#      Keycloak authenticates the client (probe Q7)
+# Idempotent: each step reads first (the connection, whether Vault's password
+# is the before estate's, whether Keycloak's stored one binds, the client's
+# authenticator, booking.env).
+- name: Act 4, people and the bind account
+  hosts: localhost
+  gather_facts: false
+  vars:
+    v_ns: "{{ vult_cluster_addr }}/v1/{{ vult_namespace }}"
+    v_token: "{{ lookup('ansible.builtin.file', vult_tokens_dir + '/ansible-platform') }}"
+    base: dc=tidewell,dc=lab
+    kc: "{{ vult_keycloak_url }}"
+    old_bind: "{{ lookup('ansible.builtin.file', vult_root + '/.secrets/identity/system/keycloak-bind') }}"
+  tasks:
+    # ── 1. The engine's connection, then the static role ────────────────────
+    - name: Read Vault's LDAP connection
+      ansible.builtin.uri:
+        url: "{{ v_ns }}/ldap/config"
+        ca_path: "{{ vult_ca }}"
+        headers: { X-Vault-Token: "{{ v_token }}" }
+        status_code: [200, 404]
+      register: ldapconf
+      check_mode: false
+
+    - name: Connect Vault to OpenLDAP as cn=vault-rotator
+      ansible.builtin.uri:
+        url: "{{ v_ns }}/ldap/config"
+        method: POST
+        ca_path: "{{ vult_ca }}"
+        headers: { X-Vault-Token: "{{ v_token }}" }
+        body_format: json
+        body:
+          binddn: "cn=vault-rotator,ou=system,{{ base }}"
+          bindpass: "{{ lookup('ansible.builtin.file', vult_root + '/.secrets/identity/system/vault-rotator') }}"
+          url: ldap://openldap
+          schema: openldap
+          userdn: "ou=system,{{ base }}"
+        status_code: [200, 204]
+      when: ldapconf.status == 404 or not ldapconf.json.data.binddn | default('') is search('vault-rotator')
+      changed_when: true
+      no_log: true
+
+    - name: Mark the connection for Terraform
+      ansible.builtin.copy:
+        dest: "{{ vult_root }}/.build/ldap-connected"
+        content: "written by ansible/act-4.yml; removed by make stage-reset\n"
+        mode: "0600"
+
+    - name: Terraform declares the static role
+      ansible.builtin.command: "{{ vult_root }}/scripts/tf.sh vault-platform apply -no-color"
+      environment: { ACT: "4" }
+      register: tf
+      changed_when: "'0 added, 0 changed, 0 destroyed' not in tf.stdout"
+
+    # ── 2. Rotate, push into Keycloak, prove the federation binds ───────────
+    - name: Vault's record of keycloak-bind's password
+      ansible.builtin.uri:
+        url: "{{ v_ns }}/ldap/static-cred/keycloak-bind"
+        ca_path: "{{ vult_ca }}"
+        headers: { X-Vault-Token: "{{ v_token }}" }
+      register: cred_now
+      no_log: true
+      check_mode: false
+
+    - name: Rotate it now (Vault never knew it, or it is still the before estate's)
+      ansible.builtin.uri:
+        url: "{{ v_ns }}/ldap/rotate-role/keycloak-bind"
+        method: POST
+        ca_path: "{{ vult_ca }}"
+        headers: { X-Vault-Token: "{{ v_token }}" }
+        status_code: [200, 204]
+      when: (cred_now.json.data.password | default('')) in ['', old_bind]
+      changed_when: true
+
+    - name: The password Vault set
+      ansible.builtin.uri:
+        url: "{{ v_ns }}/ldap/static-cred/keycloak-bind"
+        ca_path: "{{ vult_ca }}"
+        headers: { X-Vault-Token: "{{ v_token }}" }
+      register: cred
+      no_log: true
+      check_mode: false
+
+    - name: Keycloak's admin token (master realm)
+      ansible.builtin.uri:
+        url: "{{ kc }}/realms/master/protocol/openid-connect/token"
+        method: POST
+        ca_path: "{{ vult_ca }}"
+        body_format: form-urlencoded
+        body:
+          grant_type: password
+          client_id: admin-cli
+          username: admin
+          password: "{{ lookup('ansible.builtin.file', vult_root + '/.secrets/identity/keycloak-admin-password') }}"
+      register: kcadmin
+      no_log: true
+      check_mode: false
+
+    - name: The federation component
+      ansible.builtin.uri:
+        url: "{{ kc }}/admin/realms/tidewell/components?name=tidewell-ldap"
+        ca_path: "{{ vult_ca }}"
+        headers: { Authorization: "Bearer {{ kcadmin.json.access_token }}" }
+      register: comp
+      no_log: true
+      check_mode: false
+
+    - name: Does Keycloak's stored bind password still bind?
+      ansible.builtin.uri:
+        url: "{{ kc }}/admin/realms/tidewell/testLDAPConnection"
+        method: POST
+        ca_path: "{{ vult_ca }}"
+        headers: { Authorization: "Bearer {{ kcadmin.json.access_token }}" }
+        body_format: json
+        body: &ldaptest
+          action: testAuthentication
+          componentId: "{{ comp.json[0].id }}"
+          connectionUrl: ldap://openldap:389
+          authType: simple
+          bindDn: "cn=keycloak-bind,ou=system,{{ base }}"
+          bindCredential: "**********"
+          useTruststoreSpi: always
+          startTls: "false"
+        status_code: [204, 400]
+      register: kc_bind
+      check_mode: false
+
+    - name: Push Vault's password into Keycloak's federation (admin REST)
+      ansible.builtin.uri:
+        url: "{{ kc }}/admin/realms/tidewell/components/{{ comp.json[0].id }}"
+        method: PUT
+        ca_path: "{{ vult_ca }}"
+        headers: { Authorization: "Bearer {{ kcadmin.json.access_token }}" }
+        body_format: json
+        body: "{{ comp.json[0] | combine({'config': comp.json[0].config | combine({'bindCredential': [cred.json.data.password]})}) }}"
+        status_code: [204]
+      when: kc_bind.status != 204
+      changed_when: true
+      no_log: true
+
+    - name: Keycloak binds with it
+      ansible.builtin.uri:
+        url: "{{ kc }}/admin/realms/tidewell/testLDAPConnection"
+        method: POST
+        ca_path: "{{ vult_ca }}"
+        headers: { Authorization: "Bearer {{ kcadmin.json.access_token }}" }
+        body_format: json
+        body: *ldaptest
+        status_code: [204]
+      check_mode: false
+
+    - name: Teun signs in through the federation
+      ansible.builtin.uri:
+        url: "{{ kc }}/realms/tidewell/protocol/openid-connect/token"
+        method: POST
+        ca_path: "{{ vult_ca }}"
+        body_format: form-urlencoded
+        body:
+          grant_type: password
+          client_id: tidewell-cli
+          username: teun
+          password: "{{ lookup('ansible.builtin.file', vult_root + '/.secrets/people/teun') | trim }}"
+      register: teun
+      no_log: true
+      check_mode: false
+
+    - name: The booking app takes Teun as staff
+      ansible.builtin.uri:
+        url: "{{ vult_booking_url }}/api/me"
+        ca_path: "{{ vult_ca }}"
+        headers: { Authorization: "Bearer {{ teun.json.access_token }}" }
+      register: me
+      failed_when: me.json.user != 'teun' or 'bookings' not in me.json.groups
+      check_mode: false
+
+    # ── 3. The booking client: a Vault certificate instead of a secret ──────
+    - name: The booking client in Keycloak
+      ansible.builtin.uri:
+        url: "{{ kc }}/admin/realms/tidewell/clients?clientId=tidewell-booking"
+        ca_path: "{{ vult_ca }}"
+        headers: { Authorization: "Bearer {{ kcadmin.json.access_token }}" }
+      register: client
+      no_log: true
+      check_mode: false
+
+    - name: Keycloak authenticates it by its certificate (client-x509, CN=booking)
+      ansible.builtin.uri:
+        url: "{{ kc }}/admin/realms/tidewell/clients/{{ client.json[0].id }}"
+        method: PUT
+        ca_path: "{{ vult_ca }}"
+        headers: { Authorization: "Bearer {{ kcadmin.json.access_token }}" }
+        body_format: json
+        body: >-
+          {{ client.json[0] | combine({'clientAuthenticatorType': 'client-x509',
+             'attributes': client.json[0].attributes | combine({'x509.subjectdn': 'CN=booking', 'x509.allow.regex.pattern.comparison': 'false'})}) }}
+        status_code: [204]
+      when: client.json[0].clientAuthenticatorType != 'client-x509'
+      changed_when: true
+      no_log: true
+
+    - name: The app's booking.env no longer holds the client secret
+      ansible.builtin.lineinfile:
+        path: "{{ vult_root }}/.secrets/workload/booking.env"
+        regexp: '^OIDC_CLIENT_SECRET='
+        state: absent
+      register: envfile
+      no_log: true
+
+    - name: The app's copy of booking.env follows (booking-init, in place)
+      ansible.builtin.shell: |
+        set -euo pipefail
+        c="{{ vult_root }}/scripts/compose.sh workload"
+        $c up -d --force-recreate --no-deps booking-init
+        rc=$(podman wait vult-booking_init)
+        [ "$rc" = 0 ] || { podman logs vult-booking_init >&2; exit 1; }
+        $c rm -f booking-init >/dev/null
+      args: { executable: /bin/bash }
+      when: envfile.changed # noqa: no-handler  the next task proves the mTLS sign-in on the new file; a handler would run after it
+      changed_when: true
+
+    - name: Keycloak authenticates the app over mutual TLS with its Vault certificate
+      ansible.builtin.command:
+        argv:
+          - podman
+          - exec
+          - vult-booking
+          - node
+          - -e
+          - |
+            const https = require('node:https'), fs = require('node:fs');
+            const r = https.request('https://keycloak:8443/realms/tidewell/protocol/openid-connect/token', { method: 'POST',
+              cert: fs.readFileSync('/vault/out/tls/cert.pem'), key: fs.readFileSync('/vault/out/tls/key.pem'),
+              headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }, (res) => {
+              let d = ''; res.on('data', (c) => (d += c)); res.on('end', () => {
+                const j = JSON.parse(d || '{}');
+                console.log(JSON.stringify({ status: res.statusCode, error: j.error || null, error_description: j.error_description || null })); });
+            });
+            r.on('error', (e) => { console.log(JSON.stringify({ status: 0, error: e.message })); });
+            r.end('grant_type=client_credentials&client_id=tidewell-booking');
+      register: mtls
+      changed_when: false
+      # Authenticated: a token, or unauthorized_client (no service account). invalid_client is a refusal.
+      failed_when: (mtls.stdout | from_json).error not in [none, 'unauthorized_client']
+      check_mode: false

@@ -179,12 +179,22 @@ phases() {
 # (D11) and export VAULT_TOKEN for this shell. The password is read by jq from
 # its file into the request body on curl's stdin, never on a command line.
 # Never printed. VAULT_NAMESPACE is not exported: callers pass the header.
-person_login() {
-  local user=$1 ns
+person_login() { # <user>: the way people sign in here (D14): Keycloak, then Vault's jwt auth
+  local user=$1 ns at
   ns=$(vult_conf VULT_NAMESPACE)
-  VAULT_TOKEN=$(jq -n --rawfile p "$VULT_ROOT/.secrets/people/$user" '{password: ($p | rtrimstr("\n"))}' |
-    curl -sf --cacert "$VAULT_CACERT" -H "X-Vault-Namespace: $ns" \
-      "$VAULT_ADDR/v1/auth/userpass/login/$user" --data @- | jq -er '.auth.client_token') || {
+  # The password goes to curl on stdin, never on its command line.
+  # jq -j: no trailing newline, which --data-binary would send inside the password.
+  local kc
+  kc=$(jq -jn --rawfile p "$VULT_ROOT/.secrets/people/$user" --arg u "$user" \
+    '"grant_type=password&client_id=tidewell-cli&username=\($u)&password=\($p | rtrimstr("\n") | @uri)"' |
+    curl -sS --cacert "$VAULT_CACERT" "https://localhost:$(vult_conf VULT_PORT_KEYCLOAK)/realms/tidewell/protocol/openid-connect/token" --data-binary @-)
+  at=$(jq -er '.access_token' <<<"$kc" 2>/dev/null) || {
+    echo "person_login: Keycloak refused $user: $(jq -r '"\(.error // "no answer") \(.error_description // "")"' <<<"$kc" 2>/dev/null || echo 'no answer')" >&2
+    return 1
+  }
+  unset kc
+  VAULT_TOKEN=$(jq -n --arg j "$at" '{role: "person", jwt: $j}' |
+    curl -sf --cacert "$VAULT_CACERT" -H "X-Vault-Namespace: $ns" "$VAULT_ADDR/v1/auth/jwt/login" --data @- | jq -er '.auth.client_token') || {
     echo "person_login: Vault refused $user" >&2
     return 1
   }

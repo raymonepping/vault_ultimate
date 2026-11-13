@@ -56,3 +56,21 @@ variable "booking_ip" {
   type        = string
   default     = "10.89.28.70"
 }
+
+variable "ldap_connected" {
+  description = "Vault's LDAP engine has its connection (written by the act-4 wave; scripts/tf.sh reads .build/ldap-connected)."
+  type        = bool
+  default     = false
+}
+
+variable "obo_issuer" {
+  description = "The delegation token's issuer: the booking app (act 5)."
+  type        = string
+  default     = "https://localhost:14202"
+}
+
+variable "obo_audience" {
+  description = "The delegation token's audience: Tidewell's Vault (act 5)."
+  type        = string
+  default     = "https://vault.tidewell.example"
+}

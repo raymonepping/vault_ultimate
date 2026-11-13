@@ -1,0 +1,48 @@
+# reconcile-localstack (ansible; make up runs it when LocalStack started
+# empty): the free LocalStack keeps nothing across a restart (measured in
+# vault_sync). From act 1, Vault is the system of record for the deploy
+# token's AWS copy, but Sync does not notice a copy that vanished: the AWS
+# association is removed and set again, so Vault writes the copy back. At act
+# 0, make up runs before-estate instead (the legacy store and the hand-made
+# copy).
+- name: Reconcile LocalStack with Vault
+  hosts: localhost
+  gather_facts: false
+  vars:
+    v_ns: "{{ vult_cluster_addr }}/v1/{{ vult_namespace }}"
+    v_token: "{{ lookup('ansible.builtin.file', vult_tokens_dir + '/ansible-platform') }}"
+    story: "{{ lookup('ansible.builtin.file', vult_root + '/config/story.json') | from_json }}"
+    dest: aws-sm/tidewell-localstack
+  tasks:
+    - name: The AWS destination's associations
+      ansible.builtin.uri:
+        url: "{{ v_ns }}/sys/sync/destinations/{{ dest }}/associations"
+        ca_path: "{{ vult_ca }}"
+        headers: { X-Vault-Token: "{{ v_token }}" }
+        status_code: [200, 404]
+      register: assoc
+      check_mode: false
+
+    - name: Vault writes the copy back (remove, then set the association)
+      ansible.builtin.uri:
+        url: "{{ v_ns }}/sys/sync/destinations/{{ dest }}/associations/{{ item }}"
+        method: POST
+        ca_path: "{{ vult_ca }}"
+        headers: { X-Vault-Token: "{{ v_token }}" }
+        body_format: json
+        body: { mount: kv, secret_name: "{{ story.deploy.kv_name }}" }
+      loop: [remove, set]
+      when: assoc.status == 200 and (assoc.json.data.associated_secrets | default({}) | length) > 0
+      changed_when: true
+
+    - name: Synced again
+      ansible.builtin.uri:
+        url: "{{ v_ns }}/sys/sync/destinations/{{ dest }}/associations"
+        ca_path: "{{ vult_ca }}"
+        headers: { X-Vault-Token: "{{ v_token }}" }
+      register: again
+      until: (again.json.data.associated_secrets | default({}) | dict2items | selectattr('value.sync_status', 'equalto', 'SYNCED') | list | length) > 0
+      retries: 30
+      delay: 2
+      when: assoc.status == 200 and (assoc.json.data.associated_secrets | default({}) | length) > 0
+      check_mode: false

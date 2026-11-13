@@ -68,9 +68,14 @@
             umask 077
             mkdir -p "{{ work }}"
             printf '%s\n' "$CSR" >"{{ work }}/int.csr"
-            printf 'basicConstraints=critical,CA:TRUE,pathlen:0\nkeyUsage=critical,keyCertSign,cRLSign\nsubjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid\n' >"{{ work }}/ext.cnf"
+            printf '%s\n' basicConstraints=critical,CA:TRUE,pathlen:0 keyUsage=critical,keyCertSign,cRLSign \
+              subjectKeyIdentifier=hash authorityKeyIdentifier=keyid >"{{ work }}/ext.cnf"
+            # Valid from an hour ago: Vault backdates every leaf by 30 s, and a
+            # fresh intermediate signed "now" refused the first year-long
+            # certificate with "notBefore before signer's notBefore" (measured).
             openssl x509 -req -in "{{ work }}/int.csr" -CA "{{ ca_crt }}" -CAkey "{{ ca_key }}" -CAcreateserial \
-              -CAserial "{{ work }}/ca.srl" -days 3650 -sha256 -extfile "{{ work }}/ext.cnf" -out "{{ work }}/int.crt" 2>/dev/null
+              -CAserial "{{ work }}/ca.srl" -not_before "$(date -u -v-1H +%Y%m%d%H%M%SZ)" -days 3650 -sha256 \
+              -extfile "{{ work }}/ext.cnf" -out "{{ work }}/int.crt" 2>/dev/null
             cat "{{ work }}/int.crt" "{{ ca_crt }}"
           args: { executable: /bin/bash }
           environment:

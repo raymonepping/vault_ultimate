@@ -373,3 +373,325 @@ them here; this session found them and finished what acts 2 and 3 needed.
   container.
 - Agent renewing the one-hour certificate before it ends was not watched
   through a full hour.
+
+## Prompt 07: Acts 4 to 6 (2026-11-13)
+
+Act 6 follows the brief's reframe (no note holds a credential): a revocation
+drill, as the brief says it overrules this prompt.
+
+### Built
+
+- Act 4: `act4_people.tf` (the LDAP mount; the static role `keycloak-bind`,
+  30 days, `skip_import_rotation`, behind `var.ldap_connected`);
+  `ansible/act-4.yml` (Vault's LDAP connection as cn=vault-rotator, the
+  marker `.build/ldap-connected`, Terraform again, rotate, push into
+  Keycloak's federation over the admin REST API, Keycloak's own bind test,
+  Teun signs in; the booking client switched to `client-x509` with subject
+  `CN=booking`: the site's one-hour Vault certificate authenticates it over
+  mutual TLS, and `OIDC_CLIENT_SECRET` leaves booking.env). Keycloak runs
+  with `KC_HTTPS_CLIENT_AUTH=request` and the lab CA as truststore.
+- Act 5: `act5_agent.tf` (Transit key `obo` through `vault_generic_endpoint`,
+  the OAuth profile `booking-obo` with the key read from Transit, policies
+  `vult-teun` and `vult-agent-ceiling`, entities `teun` and `tide-agent`
+  with `profile_name` aliases; the booking policy signs with `obo` from act
+  5); `ansible/act-5.yml` (agent registration with the ceiling, synthetic
+  permits, Agent with its API proxy `compose/workload/agent/proxy.hcl`, the
+  static key out of both .env files, the weather cancellation, Teun asks the
+  agent, the scripted overreach; `.build/acts/act-5-evidence.json`).
+- The booking app: `lib/delegation.js` (at+jwt for the clerk, exp bounded by
+  his session and 300 s, signed through Agent's proxy; Vault decides each
+  agent action by the token reading the action's permit, its answer kept
+  verbatim), `POST /api/agent/ask` and `/api/agent/act` (staff), Keycloak's
+  token endpoint over mutual TLS when there is no client secret, the lease id
+  in `/healthz`. 4 new unit tests.
+- Act 6: `ansible/act-6.yml` (Saskia signs in through Keycloak and Vault's
+  jwt auth; she looks up and revokes the app's current lease; the drill
+  measures until PostgreSQL has no session left; Agent logs in again; a
+  booking; Saskia rotates the deploy token; Sync and Agent carry it;
+  `.build/act6/drill.json`), `scripts/act6-collect.sh` (audit log,
+  PostgreSQL's connection log, GitHub's and LocalStack's own times),
+  `api/lib/timeline.js` and `api/bin/timeline.js`, `scripts/timeline.sh`
+  (`make timeline`): rows, the evidence panel (window to the second, hand
+  changes, people), a summary whose sentences must cite real rows (Ollama's
+  structured output with a JSON schema); 6 unit tests.
+- Agent renders the deploy token from KV (`deploy.json`,
+  `static_secret_render_interval` 15 s); the witness tries Vault's current
+  value beside the before estate's, so the residual stays visible after the
+  rotation; the longest lifetime counts what replaced a refused credential.
+- `make stage-reset` undoes acts 6 to 4 too (agent registration, permits,
+  the schedule and manifest reloaded, the old bind password back in OpenLDAP
+  and Keycloak, the booking client back on its secret, the drill records
+  archived). `make scoreboard` (`scripts/scoreboard.sh`) prints the numbers.
+
+### Measured (2026-11-13)
+
+| After | Wave (s) | Standing | Unmanaged | Longest |
+| --- | --- | --- | --- | --- |
+| act 4 | 12 | 2 | 0 | never (the agent key) |
+| act 5 | 30 | 1 (residual) | 0 | 3578 s (the one-hour certificate) |
+| act 6 | 84 | 1 (residual, rotated) | 0 | 3525 s |
+
+- Act 4: the old bind password `Invalid credentials (49)`, the old client
+  secret `401 invalid_client: Invalid client or Invalid client credentials`;
+  over mTLS Keycloak answers `unauthorized_client` (it authenticated the
+  client; it has no service account).
+- Act 5: the model planned rebook d1-1100 to d1-1530 in 8.2 s; Vault `200`
+  on the rebook permit, 18 passengers moved `by tide-agent via delegation for
+  teun`; the overreach `Vault 403: 2 errors occurred: * CEILING_POLICY_DENIED:
+  actor ceiling policy denied permission * permission denied`; the old key
+  `200 {"user":null}`.
+- Act 6: the session gone 0.43 s after the revoke, bookings back on a new
+  lease 12.9 s later; the old deploy token `401 deploy token refused`, the
+  rotated one works and is SYNCED to both destinations; panel: 0 hand
+  changes, people `saskia`; summary 6 to 7 cited sentences in 30 to 45 s.
+- All six acts from a reset in a row: 14, 19, 17, 12, 30, 84 s. `make lab`
+  at act 6: 78 s, every gate green. `make stage-reset` from act 6: 41 to
+  44 s, the baseline. `make tf-plan ACT=6` empty after act 5 and 6.
+  `npm test`: api 53, booking 13.
+
+### Learned
+
+- Vault creates an LDAP static role only once the engine has its connection,
+  and the connection is Ansible's (it carries a password): Terraform runs
+  twice in act 4, gated by `.build/ldap-connected`.
+- The provider's `vault_transit_secret_backend_key` always writes
+  `keys/<name>/config`, which the bootstrap policy denies Terraform (no key
+  may become exportable): the key is a `vault_generic_endpoint`.
+- The agent registry answers 400 `agent with provided display_name does not
+  exist`, not 404.
+- Audit display names carry the namespace's mount: `tidewell-auth-jwt-saskia`.
+- PostgreSQL logs the revocation's session end 5 ms before Vault writes the
+  revoke's audit response; LocalStack keeps whole seconds: a Vault change up
+  to 5 s after a target's change still accounts for it.
+- SIGHUP only reloads Agent's configuration; a revoked lease stays in its
+  template until the next renewal (about two thirds of the TTL), so the
+  drill gives Agent a fresh secret zero.
+- `llama3.2:3b` ignores a JSON shape asked for in words; Ollama's `format`
+  with a JSON schema holds it. A cold summary needs more than 20 s:
+  `VULT_OLLAMA_SUMMARY_TIMEOUT_MS=90000`.
+- An Ansible `register: lookup` shadows the `lookup()` function for every
+  later task.
+- `ldappasswd -y` keeps a trailing newline; the reset strips it first.
+
+## Prompt 08: The console API (2026-11-13)
+
+### Built
+
+- `api/server.js` rewritten for this lab (vault_sync's story steps,
+  `lib/story.js` and its test are gone): Saskia signs in through Keycloak
+  (`lib/oidc.js`: code flow with PKCE for the public client
+  `tidewell-console`; the access token is traded at once for her own Vault
+  token through `auth/jwt/login`, role person; only a token carrying
+  `vult-presenter` gets a session, any other is revoked). Routes as the
+  prompt lists, plus `GET /api/op` (the runner's operation). Her own Vault
+  actions (revoke a lease the console listed, rotate the deploy token with a
+  value made in the API) carry `X-Correlation-Id`; an already-gone lease is a
+  success, said so.
+- The host runner (`runner/`, vault_lab_index's controller pattern, its
+  `runner.js` and `redact.js` with their tests): 127.0.0.1:14209, a fresh
+  bearer token per start in `.build/run/runner.token`, browsers refused, one
+  allowlisted make target at a time (act-1..6, witness, timeline, plan,
+  agent, github-evidence, stage-reset), redacted output.
+  `scripts/runner.sh start|stop|status`; `make app-up` starts it, `make down`
+  stops it. The API reaches it as `host.containers.internal`.
+- `lib/console.js` (the next act only, no parameters in a body, revocable
+  only a lease the console listed, a single-use reset confirmation, GitHub
+  staleness), `lib/events.js` (scrub plus redaction on the way in),
+  `lib/runner-client.js`.
+- The witness: an unreachable target is unknown (works null), never
+  refused; the scoreboard lists unknowns.
+- `api/Containerfile`: `pg` from the lockfile in an `npm ci` stage.
+  `compose/app`: the API mounts `.build` read-only and runs as container uid
+  0 (the Mac user, no capability), nginx sends `/auth/` to the API.
+- `scripts/down.sh` stops every stack (it stopped four of eight) and the
+  runner. `make agent`. Phase `app-up` un-pended.
+- Tests: `test/console.test.js`, `test/server.test.js`,
+  `test/witness.test.js`, session tests for the jwt sign-in. `npm test` in
+  api: 59 pass; runner: 10 pass.
+
+### Measured (2026-11-13)
+
+- `make app-build` (api, web) and `make app-up`: the API healthy behind the
+  console, `/api/healthz` `{"ok":true,"act":0}`; the API container reaches
+  the runner and reads `.build`.
+- Runner: 401 without the token, 403 with an Origin header, 400 for a target
+  off the list.
+
+### Learned
+
+- `.build` is 0700 on the Mac: a container uid other than 0 cannot read it
+  through a bind mount (rootless Podman maps the Mac user to uid 0).
+
+### Deferred
+
+- The sign-in round trip through Keycloak's real form is proven by
+  Playwright in prompt 09.
+
+## Prompt 09: The console (2026-11-13)
+
+### Built
+
+- `web/` rewritten for this lab on vault_sync's shell (Vault daylight glass,
+  `vault-ui-design`): Scoreboard (the four numbers in the ink hero, each
+  opening its witness rows; the act rail with the next act's button only;
+  Terraform's "what's left" verbatim), Acts (one card per act with its
+  witness rows and Vault's answers), Witness, Investigation (the panel, the
+  lease to revoke, Agent's fresh login, the rotation with GitHub's and
+  LocalStack's times, the cited summary or "not available" with its reason,
+  the timeline), Proof (events with correlation ids; the stage reset behind a
+  single-use confirmation). Sign-in is a link to Keycloak. `src/format.js`
+  (5 tests), `components/console.jsx` (the runner's operation, followed to
+  its end), `styles/console.css` (tokens only). vault_sync's pages, map and
+  CSS removed. `DESIGN.md` updated.
+- API: `POST /api/agent/login` (a fresh secret zero after a console revoke);
+  an act waits out a running witness (2 s) instead of answering 409; the
+  runner keeps the last 20 operations, `/api/op?id=` finds one.
+- `e2e/` rewritten: sign-in through Keycloak's real form, the journey (act 0,
+  acts 1 to 6 from the act rail, act 6's numbers, revoke, Agent, rotate, the
+  summary or its absence, axe on every page at 1440x900 and 390x844 at act
+  6 and signed out, the reset from Proof), `served.spec.ts` (TLS, CSP, no
+  legacy value in a bundle or an API answer, cross-site, parameters, an
+  unlisted lease). The journey writes `docs/screenshots/`.
+
+### Measured (2026-11-13)
+
+- `make test-ui`: 28 passed in 5.8 min, axe 0 violations everywhere.
+- Screenshots: scoreboard at act 0, act 6 and on a phone, acts, witness,
+  investigation, proof.
+
+### Learned
+
+- A lease issued in a namespace ends in `.<namespace id>`
+  (`database/creds/booking/...PZrqW`): the console's allowlist missed it.
+- Vault's jwt login answer has no `display_name`: the API takes the user from
+  the access token Vault has just accepted (`preferred_username`).
+- The Scoreboard starts a witness run when the last is older than 15 s, so an
+  act pressed right after must wait it out, and a test must find its own
+  operation by id, not by "latest".
+- With Chromium and a wave on the same 4 CPUs, the cited summary passed 90 s:
+  `VULT_OLLAMA_SUMMARY_TIMEOUT_MS=180000`; the page shows the reason beside
+  the prescribed "not available" line, in the amber (degraded) tint.
+
+## Prompt 10: Rehearsal, verify, wake-up and daily operations (2026-11-13)
+
+### Built
+
+- `make rehearsal` (`scripts/rehearsal.sh`, `scripts/rehearsal.mjs`): a
+  stage reset; Saskia signs in through Keycloak's real code flow (followed by
+  hand, no browser); act 0's baseline and the open leak window; acts 1 to 6
+  through the console API with bookings made during each wave, the witness
+  numbers after each, Vault's answers (GitHub's and LocalStack's records,
+  the refused password and secret id, OCSP, the bind password, the client
+  secret, the delegation and the ceiling, act 6's revoke, rotation,
+  timeline, panel and summary); the negatives; no known value and no Vault
+  token in 156 API answers, five containers' logs, the witness history or the
+  timeline; a stage reset back to the baseline. Its output is kept in
+  `.build/rehearsal.log`.
+- `make verify` sections rewritten for this lab (platform: jwt, the act's
+  mounts, the validate phase; stacks; ollama; app and console; units: every
+  suite), and a latent bug fixed: a failing check that printed nothing ended
+  the whole run under pipefail.
+- `ansible/validate.yml` rewritten (Saskia through Keycloak, her own
+  capabilities on six paths exactly as `vult-presenter` says, the app on the
+  credential the act says); phase `validate` un-pended.
+- `make wake-up` (`scripts/wake-up.sh`, the decision in
+  `scripts/wake-decide.js`, 5 tests): clock, broken services through their
+  stacks, Vault health and a leader, a fresh secret id for Agent from act 2.
+- `scripts/up.sh` rewritten for every stack (identity, data, ai and cloud in
+  parallel, a LocalStack that started empty gets its act's content back:
+  `before-estate` at act 0, `ansible/reconcile-localstack.yml` from act 1;
+  Agent's fresh login when needed), each step with its duration;
+  `scripts/down.sh` stops every stack and the runner. `make doctor` is
+  act-aware and covers every stack, the VM disk, the licence, the GitHub
+  App's installation and Ollama's model. Lint: ansible-lint and shellcheck
+  clean (21 findings fixed, three `no-handler` with their reason).
+
+### Measured (2026-11-13)
+
+- `make verify`: 91 passed, 0 failed, 425 s (the rehearsal 60 passed, 0
+  failed, 298 s).
+- `make down` 22 s; `make up RUNTIME=podman` from stopped: 116 s before the
+  stacks started in parallel, **76 s** after (Vault 24 s, the four stacks 35 s
+  bound by Keycloak, LocalStack's re-seed 10 s, workload 5 s, console 2 s):
+  inside the 90 s budget.
+- `make wake-up`: a no-op in 2 s; a stopped `vult-tide_agent` restarted in
+  2 s; at act 2 a stopped Vault Agent back on a fresh secret id with the app
+  on its lease in 24 s, and a real 7 s VM clock skew fixed on the way.
+
+### Learned
+
+- Vault tags its LocalStack copy `hashicorp:vault` with an empty value: test
+  the key, not its truthiness.
+- `compose run` of a one-shot starts its dependencies again (Keycloak's
+  bootstrap brought `identity-init` back): `--no-deps` when the service runs.
+- macOS's `/bin/bash` is 3.2: no associative arrays in scripts the Lab Index
+  may run.
+- An Ansible dict's keys are not templated: a list of `{path, caps}` instead.
+
+## Prompt 11: The Lab Index, end to end (2026-11-13)
+
+The Lab Index (`../vault_lab_index`, controller on 18801, `vlix-ui` on
+18800) was running and was not changed. A Playwright script on its own hooks
+(`data-lab`, `data-testid="stop"`, `confirm-stop`, `start`, `status`):
+
+- After Refresh, vault_ultimate is eligible with prefix `vult-` (source
+  `lab`), the README's title "vault_ultimate: Zero Standing Secrets" and its
+  first paragraph, status Running.
+- Stop through the dashboard and its confirmation dialog: **25 s** to
+  Stopped ("13 stopped"); every one of the 23 `vult-` volumes kept,
+  `vult-ollama_models` included (compared before and after).
+- Start: **74 s** to Running; then `make verify` 91 passed, 0 failed (440 s),
+  the lab at act 0 as before the stop.
+- Screenshots: `docs/screenshots/lab-index-running.png`,
+  `lab-index-stopped.png`. Only vault_ultimate was stopped or started.
+
+For vault_lab_index's own backlog (not built here): a **"Wake all"** button
+that runs `make wake-up` in every running lab that has the target, after the
+Mac slept (one controller operation per lab, in turn, with each lab's one
+screen of what it fixed).
+
+## Prompt 12: Docs, public readiness and the final run (2026-11-13)
+
+### Built
+
+- `README.md` rewritten for this lab (the first paragraph the Lab Index
+  shows, the split quote, what it proves and only illustrates, the seven
+  acts, the scoreboard with the measured numbers, prerequisites, first run,
+  daily, checks, ports, where things are). `docs/architecture.md`,
+  `operations.md`, `security-model.md`, `ownership.md` rewritten; new
+  `docs/evidence-model.md` (the witness, the scoreboard's rules, the
+  timeline, derived rows, hand changes, people, the citation rule);
+  `docs/STORY.md` brought in line with the reframe; `DESIGN.md`,
+  `CHANGELOG.md` (1.0.0), `CONTRIBUTING.md`. markdownlint clean, no em
+  dashes.
+- CI runs every unit suite (api with pg, web, booking, tide-agent, runner,
+  scripts), the console build and `make lint`; Dependabot covers the booking
+  app too. `article/STYLE.md` (private) from the medium-article template.
+- `make boundary`: Saskia's 16 rows rewritten for this lab's
+  `vult-presenter`, through her real sign-in (`person_login`: Keycloak, then
+  jwt; it reports Keycloak's error code): 66 checks, none skipped (before:
+  16 always skipped, waiting for vault_sync's userpass phase).
+- `make clean-slate` also stops the runner, archives the witness history and
+  act 6's records, and clears the act records (a rebuild starts at act 0).
+
+### Measured (2026-11-13)
+
+- From stopped: `make down` 22 s, `make up RUNTIME=podman` 76 s, `make
+  verify` 91/0, `make test-ui` 28/28 (axe 0).
+- From nothing: `make clean-slate CONFIRM=DELETE` 63 s, **`make lab` 226 s**
+  (budget 300 s; every gate green), `make verify` 91/0 (409 s, rehearsal
+  60/0).
+- Public readiness: no private path or address in the files to commit;
+  `prompts/`, `input/`, `article/`, `.build/`, `.secrets/`, `backups/`,
+  `.claude/`, `.agents/`, `.codex/`, `AGENTS.md`, `.env`, `booking.env`
+  ignored; gitleaks on exactly the commit set: no leaks.
+
+### Learned
+
+- A fresh intermediate signed "now" by the lab CA refused the first year-long
+  certificate: `notBefore before signer's notBefore` (Vault backdates leaves
+  by 30 s). The lab CA now signs it valid from an hour ago.
+- Before act 1, Sync answers 403 "the Secrets Sync feature is not activated":
+  the reset accepts exactly that refusal as "no association".
+- A failed reset that had truncated the booking tables showed up next as a
+  non-idempotent `before-estate`: fix the cause, not the gate.

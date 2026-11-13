@@ -53,7 +53,9 @@
   ansible.builtin.copy:
     dest: "{{ vult_root }}/.build/agent/delivery.json"
     mode: "0600"
-    content: "{{ {'act': booking_agent_act | int, 'wrap_accessor': booking_agent_wrapped.json.wrap_info.accessor, 'wrapped_at': booking_agent_wrapped.json.wrap_info.creation_time, 'wrap_ttl': booking_agent_wrapped.json.wrap_info.ttl} | to_nice_json }}"
+    content: >-
+      {{ {'act': booking_agent_act | int, 'wrap_accessor': booking_agent_wrapped.json.wrap_info.accessor,
+          'wrapped_at': booking_agent_wrapped.json.wrap_info.creation_time, 'wrap_ttl': booking_agent_wrapped.json.wrap_info.ttl} | to_nice_json }}
 
 - name: Agent picks it up (agent-init, then Agent itself)
   ansible.builtin.shell: |

@@ -5,7 +5,7 @@
 #   terraform  fmt -check, and validate per root without a backend, in a
 #              temporary data dir: never touches .secrets/ state or a Vault
 #   ansible    ansible-lint when installed, else --syntax-check per playbook
-#   node       node --check on the API, its scripts and scripts/*.js
+#   node       node --check on the API, the runner, the workload and scripts/
 #
 # Read-only. Exit 1 when anything fails.
 set -euo pipefail
@@ -80,7 +80,7 @@ fi
 echo "node"
 if command -v node >/dev/null 2>&1; then
   n=0
-  for f in api/server.js api/lib/*.js scripts/*.js; do
+  for f in api/server.js api/lib/*.js api/bin/*.js runner/server.js runner/lib/*.js workload/booking/server.js workload/booking/lib/*.js workload/tide-agent/server.js workload/tide-agent/lib/*.js scripts/*.js scripts/*.mjs; do
     node --check "$f" || bad "node --check $f"
     n=$((n + 1))
   done

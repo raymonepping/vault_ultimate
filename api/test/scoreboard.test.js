@@ -99,3 +99,34 @@ test('the scoreboard: numbers with their evidence rows, residuals explained', ()
   assert.deepEqual(b.residuals, [{ id: 'ci-deploy-token', works: true, why: 'GitHub cannot reach Vault', evidence: [{ run: mid.at, id: 'ci-deploy-token' }] }]);
   assert.equal(scoreboard([]), null);
 });
+
+test('after: what replaced a refused credential sets the longest lifetime (never before, minutes after)', () => {
+  const run = {
+    at: '2026-11-13T11:00:00Z', copies: [],
+    credentials: [
+      { ...cred('booking-db-password', false), replaced_by: { lifetime: { until: '2026-11-13T11:14:00Z', source: 'Vault lease expire_time' } } },
+      { ...cred('booking-tls-key', false), replaced_by: { lifetime: { until: '2026-11-13T11:52:10Z', source: 'served notAfter' } } },
+      { ...cred('keycloak-ldap-bind', false), replaced_by: {} },
+      deploy(),
+    ],
+  };
+  assert.deepEqual(summarise(run).longest, { seconds: 3130, until: '2026-11-13T11:52:10Z', id: 'booking-tls-key', replacement: true, source: 'served notAfter' });
+});
+
+test('a replacement never outranks a static credential that still works for ever', () => {
+  const run = { ...act0, credentials: act0.credentials.map((c) => (c.id === 'booking-db-password' ? { ...cred(c.id, false), replaced_by: { lifetime: { until: '2026-11-13T10:15:00Z' } } } : c)) };
+  assert.equal(summarise(run).longest.never, true);
+});
+
+test('after a rotation the old residual value is refused, the residual still stands by its current value', () => {
+  const run = { ...after, credentials: after.credentials.map((c) => (c.residual ? { ...c, works: false, current: { works: true, fingerprint: 'abcd1234' } } : c)) };
+  assert.equal(summarise(run).standing, 2);
+  assert.deepEqual(summarise(run).residual, ['ci-deploy-token']);
+});
+
+test('a target that did not answer is unknown: not standing, not gone, listed', () => {
+  const run = { ...act0, credentials: act0.credentials.map((c) => (c.id === 'keycloak-ldap-bind' ? { ...c, works: null, lifetime: null } : c)) };
+  const s = summarise(run);
+  assert.equal(s.standing, 5);
+  assert.deepEqual(s.unknown, ['keycloak-ldap-bind']);
+});

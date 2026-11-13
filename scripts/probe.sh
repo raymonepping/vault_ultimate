@@ -243,6 +243,7 @@ if want Q3; then
   row P10 Q3 "unwrap the same wrapping token again" refused "HTTP $ST: $ERR" "$(yes_if '[[ "$ST" =~ ^4 ]]')"
   login() { api - POST "${P}auth/approle/login" "$(jq -n --arg r "$role_id" --arg s "$sid" '{role_id: $r, secret_id: $s}')"; }
   login
+  # shellcheck disable=SC2034  # read by the yes_if string below, when it is evaluated
   apptok=$(jq -r '.auth.client_token // empty' <<<"$BODY")
   row P11 Q3 "AppRole login with the unwrapped secret id" "a token, ttl 5m" "HTTP $ST; ttl $(jq -r '.auth.lease_duration' <<<"$BODY")s" "$(yes_if '[ -n "$apptok" ]')"
   login

@@ -6,75 +6,76 @@
 ## Topology
 
 ```text
-network vult-internal (10.89.28.0/24)          every listener: TLS 1.3, lab CA
- ├─ seal:  vault-s (Shamir 1/1, Raft): Transit key for auto-unseal
- ├─ vault: vault-1..3 (Raft, seal "transit"), audit file + stdout per node
- │         AWS_ENDPOINT_URL=https://localstack:4566, SSL_CERT_DIR with the lab CA
- │         namespace tidewell/: kv/ (v2), userpass/, vult-presenter,
- │           GitHub App vaultsyncdemo, destinations tidewell-github (gh) and
- │           tidewell-localstack (aws-sm); Secrets Sync and Import activated
- ├─ cloud: localstack 2026.10.6 at 10.89.28.50 (Secrets Manager, HTTPS with
- │         the lab certificate); host port 14666
- ├─ app:   api (Node 24 on the Vault Enterprise image, not published)
- │         web (nginx + React, TLS :14201, proxies /api)
- ├─ Terraform: vault-seal (tf-seal) │ vault-platform (tf-platform)
- └─ Ansible:   localhost → Vault and LocalStack HTTPS APIs (ansible-seal,
-               ansible-platform)
-outside: GitHub (raymonepping/vault_ultimate) through the VaultSyncDemo GitHub App;
-         the host's gh CLI reads its secret names for make github-evidence
+network vult-internal (10.89.28.0/24)         TLS with the lab CA everywhere it matters
+ ├─ seal:     vault-s (Shamir 1/1, Raft): the Transit key that unseals the cluster
+ ├─ vault:    vault-1..3 (Raft, seal "transit"), audit file + stdout per node
+ │            namespace tidewell/: kv, pki, jwt (people) from act 0;
+ │            Sync + Import (act 1), database + approle (2), pki role booking (3),
+ │            ldap (4), transit + OAuth profile + agent registry (5)
+ ├─ identity: OpenLDAP (dc=tidewell,dc=lab), Keycloak 26.8 (realm tidewell,
+ │            read-only LDAP federation, clients tidewell-console, -booking, -cli)
+ ├─ data:     PostgreSQL 17 at .60 (TLS, SCRAM, the connection log in jsonlog)
+ ├─ ai:       Ollama (llama3.2:3b), internal only
+ ├─ cloud:    LocalStack at .50 (Secrets Manager)
+ ├─ workload: booking (.70, HTTPS 14202), booking-agent (Vault Agent in
+ │            booking's network namespace, from act 2), tide-agent (the AI agent)
+ └─ app:      api (Node 24 on the Vault Enterprise image, not published),
+              web (nginx, React, TLS 1.3 on 14201; /api and /auth to the API)
+host:   runner/ (127.0.0.1:14209): make targets for the console, one at a time
+        Terraform (vault-seal, vault-platform), Ansible, the witness container
+outside: GitHub (raymonepping/vault_ultimate) through the VaultSyncDemo App
 ```
 
-## The two directions
+## Who does what
+
+- **Terraform** declares structure, act by act (`var.act`, D10): mounts,
+  roles, policies, auth methods, the OAuth profile, entities. `make tf-plan
+  ACT=current` is empty at every act; `make tf-plan ACT=6` is what is left.
+- **Ansible** carries what has a value or a moment: connections with their
+  passwords, the wrapped secret id, rotations and pushes, the before estate,
+  the waves (`ansible/act-N.yml`), the reset.
+- **Vault** issues, renews, revokes and records; the audit log names who.
+- **Make** is the front door: `make act-N` runs Terraform to act N, then the
+  wave, then writes `.build/act` (last, so a failed wave leaves the old act).
+
+## The booking app's credentials, act by act
 
 ```text
-              PULL (Secrets Import)                 PUSH (Secrets Sync)
- LocalStack ──────────────────────▶ Vault kv/parcel ──────────────────▶ GitHub Actions
- tidewell-legacy/*   vault operator         (system      associations      TIDEWELL_PARCEL_..._VALUE
-                  import, run by the     of record)   set / remove
-                  API as Saskia                        ─────────────────▶ LocalStack
-                                                                        vault/tidewell/parcel/*
+act 0  booking.env ── DB password (static, VALID UNTIL infinity)
+       booking.env ── Keycloak client secret, agent key, deploy token
+       year-long certificate (pki role booking-year)
+act 2  Ansible ── wrapped secret id ──▶ Vault Agent ── AppRole login (once)
+       Agent ── database/creds/booking (15 min, renewed) ──▶ /vault/out/db.json
+       Agent ── kv ci/deploy-token ──▶ /vault/out/deploy.json
+act 3  Agent ── pki/issue/booking (1 h) ──▶ /vault/out/tls/{key,cert}.pem
+act 4  Keycloak ◀── mTLS with the site certificate (client-x509): no client secret
+act 5  Agent API proxy on 127.0.0.1:8100 ── transit/sign/obo ──▶ at+jwt for the clerk
 ```
 
-1. **Pull.** The API writes an import config from `config/story.json` (one
-   mapping per legacy secret that KV does not hold yet, LocalStack's /32 in
-   `allowed_ipv4_cidrs`) to its tmpfs and runs `vault operator import
-   -config=... [plan|-auto-approve apply]` with Saskia's token in the child's
-   environment. Import reads Secrets Manager through `AWS_ENDPOINT_URL` and
-   writes metadata, then data. It does not parse a JSON `SecretString`, so
-   the legacy values are plain strings (D19). The CLI exits 0 even when a
-   write was refused; the API reads its "Secrets not imported" list instead.
-2. **Push.** `associations/set` on a destination in `tidewell` makes Vault
-   write the secret there and keep it current: on GitHub as a repository
-   Actions secret named by `TIDEWELL_{{ .SecretPath | uppercase }}_{{
-   .SecretKey | uppercase }}` (secret-key granularity; Vault turns `/` and `-`
-   into `_`), in LocalStack as `vault/tidewell/<path>` holding `{"value": ...}`
-   (secret-path granularity). `associations/remove` deletes the copy.
-   `associations/set` needs read on the secret: Saskia may read exactly the
-   one secret the story syncs.
-3. **Evidence.** The console reads Vault (KV metadata, sync status) and
-   LocalStack (names, tags, value fingerprints computed in memory) as Saskia,
-   and GitHub's own record from `.build/github/evidence.json`, which `make
-   github-evidence` writes on the host with `gh secret list`. Evidence read
-   before Vault's last sync of a secret shows as stale.
+The app reads each file on change (polled fingerprints, in-place writes) and
+swaps its database pool or TLS context without a restart.
+
+## The console
+
+```text
+browser ── /auth/login ──▶ Keycloak (PKCE) ──▶ /auth/callback ──▶ api
+api ── auth/jwt/login (Saskia's access token) ──▶ her Vault token, server side
+api ── her token: revoke a listed lease, rotate the deploy token, read status
+api ── runner (host.containers.internal:14209, bearer token) ──▶ make act-N,
+       witness, timeline, tf-plan ACT=6, agent, stage-reset
+api ── /build (the lab's records, read-only): witness, acts, act 6 timeline, plan
+```
+
+## The witness and the timeline
+
+`make witness` runs `api/lib/witness.js` in a throwaway `vult-witness`
+container on `vult-internal`; `make timeline` runs `api/lib/timeline.js` the
+same way after `scripts/act6-collect.sh` gathered the drill's records. See
+[evidence-model.md](evidence-model.md).
 
 ## Phases
 
-`scripts/phases.txt` is the only list: seal-up, seal-init, vault-seal,
-seal-tokens, vault-up, bootstrap, cloud-up, vault-platform, people,
-github-app, destinations, seed, stage, app-up, validate. `make lab` walks it,
-then the gates: idempotency, drift, secret-scan, boundary.
-
-## The API
-
-| Route | Does |
-| --- | --- |
-| `POST /api/session`, `/api/session/end`, `GET /api/session` | sign in as `saskia` (userpass), sign out (revokes her token) |
-| `GET /api/story` | the acts, the legacy secrets by name, the busy step |
-| `POST /api/acts/:act/:step` | one step: `home/plan`, `home/apply`, `out/github`, `out/localstack`, `change/rotate`, `letgo/github`, `letgo/localstack`; empty body only |
-| `GET /api/sync` | both destinations and their associations, as Vault reports them |
-| `GET /api/sources` | each secret in the legacy store, Vault, the AWS copy and GitHub, by fingerprint |
-| `GET /api/events` | the last 200 steps (in memory), each with a correlation id |
-| `GET /api/status`, `GET /api/healthz` | nodes, LocalStack, the evidence file; the process |
-
-One step runs at a time (409 while another runs). Every Vault call carries
-`X-Correlation-Id: vult-<uuid>`, which the audit log records.
+`scripts/phases.txt` is the only phase list; `make lab` walks it, then the
+gates: idempotency (every Ansible phase again, changed=0), drift (every
+Terraform plan empty), secret scan, boundary. The acts are not phases: they
+run on request, in order, and `make stage-reset` undoes them.

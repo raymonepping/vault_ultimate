@@ -1,71 +1,98 @@
 #!/usr/bin/env bash
-# scripts/up.sh (make up, D17): the daily start, and the Lab Index's Start
-# button (it runs `make up RUNTIME=podman` with stdin closed). Idempotent:
+# scripts/up.sh (make up): the daily start, and the Lab Index's Start button
+# (it runs `make up RUNTIME=podman` with stdin closed). Idempotent; it never
+# asks a question and never touches a volume.
 #   - no licence installed: install it from .env, or stop with the instruction;
-#   - never built (no cluster init file): run make lab, the whole build;
-#   - otherwise: clock, vault-s up and unsealed, vault-1..3 (Transit
-#     auto-unseal) and a leader, LocalStack, the presenter's login checked
-#     (make people), the app; then the one-shot init container goes.
-# Each step says what it found and what it did ("kept" when nothing had to
-# change). Volumes are never touched. It never asks a question.
+#   - never built (no cluster init file): make lab, the whole build;
+#   - otherwise, from the bottom: clock, vault-s and vault-1..3 (Transit
+#     auto-unseal, a leader), identity, data, ai, cloud (a LocalStack that
+#     started empty gets its act's content back), the workload (a fresh
+#     secret id for Vault Agent when it must log in again), the console.
+# Each step says what it found and what it did ("kept" when nothing changed).
 set -euo pipefail
 # shellcheck source=scripts/common.sh
 source "$(dirname -- "$0")/common.sh"
 cd "$VULT_ROOT"
-step() { printf '\033[1m%-12s\033[0m %s\n' "$1" "$2"; }
+t0=$(date +%s)
+ts=$(date +%s)
+step() { # each line says how long its step took
+  printf '\033[1m%-10s\033[0m %s (%ss)\n' "$1" "$2" "$(($(date +%s) - ts))"
+  ts=$(date +%s)
+}
 was() { vult_container_state "$1"; }
+run() { # <name> <log> <command...>: quiet on success, the log's tail on failure
+  local name=$1 log="$BUILD_DIR/up-$2.log"
+  shift 2
+  "$@" >"$log" 2>&1 || {
+    tail -20 "$log" >&2
+    die "up: $name failed ($log)"
+  }
+}
 
 if [ ! -s "$VULT_STATE/vault.hclic" ]; then
   ./scripts/license.sh </dev/null || die "up: no Vault Enterprise licence. Put VAULT_LICENSE in .env (see .env.example), then make up again."
 fi
 [ -s vault-tls/vault.crt ] || ./scripts/gen-certs.sh
 if [ ! -s "$VULT_STATE/vault-init.json" ]; then
-  step build "this lab has never been built: make lab (about two minutes)"
+  step build "this lab has never been built: make lab (about five minutes)"
   ./scripts/lab.sh
   step built "from nothing; make show-ready before a talk"
   exit 0
 fi
+act=$(cat "$BUILD_DIR/act" 2>/dev/null || echo 0)
 
-step clock-sync "$("$VULT_ROOT/scripts/clock-sync.sh" 2>&1 | tail -1)"
+step clock "$(./scripts/clock-sync.sh 2>&1 | tail -1 | sed 's/^clock-sync: //')"
 before=$(was "$(vault_container vault-s)")
-"$VULT_ROOT/scripts/vault-up.sh" >"$BUILD_DIR/up-vault.log" 2>&1 || {
-  cat "$BUILD_DIR/up-vault.log" >&2
-  die "up: the Vault stacks did not come up (make vault-status, make vault-logs)"
-}
-step vault "$( [ "$before" = running ] && echo "kept: " )$(tail -1 "$BUILD_DIR/up-vault.log" | sed 's/^vault-up: //')"
-before=$(was vult-localstack)
-"$VULT_ROOT/scripts/cloud-up.sh" >"$BUILD_DIR/up-cloud.log" 2>&1 || {
-  cat "$BUILD_DIR/up-cloud.log" >&2
-  die "up: LocalStack did not come up (podman logs vult-localstack)"
-}
+run "the Vault stacks" vault ./scripts/vault-up.sh
+step vault "$([ "$before" = running ] && echo 'kept: ')$(tail -1 "$BUILD_DIR/up-vault.log" | sed 's/^vault-up: //')"
+
+# identity, data, ai and cloud need Vault, not each other: in parallel
+# (indexed arrays: macOS's bash 3.2 has no associative ones).
+stacks=(identity data ai cloud)
+ctrs=(vult-keycloak vult-postgres vult-ollama vult-localstack)
+pids=()
+befores=()
+for i in 0 1 2 3; do
+  befores[i]=$(was "${ctrs[i]}")
+  "./scripts/${stacks[i]}-up.sh" >"$BUILD_DIR/up-${stacks[i]}.log" 2>&1 &
+  pids[i]=$!
+done
+for i in 0 1 2 3; do
+  wait "${pids[i]}" || {
+    tail -20 "$BUILD_DIR/up-${stacks[i]}.log" >&2
+    die "up: the ${stacks[i]} stack failed ($BUILD_DIR/up-${stacks[i]}.log)"
+  }
+done
+for i in 0 1 2; do
+  printf '\033[1m%-10s\033[0m %s\n' "${stacks[i]}" "$([ "${befores[i]}" = running ] && echo "kept: ${ctrs[i]} running" || echo "${ctrs[i]} started (${befores[i]} before)")"
+done
+step stacks "identity, data, ai and cloud up, in parallel"
+before=${befores[3]}
 if [ "$before" = running ]; then
   step cloud "kept: localstack running"
+elif [ "$act" = 0 ]; then
+  # A fresh LocalStack is empty (the free licence keeps nothing): act 0's
+  # legacy store and hand-made copy again.
+  run "the before estate in LocalStack" before-estate ./scripts/ansible.sh before-estate
+  step cloud "localstack started ($before before): the legacy store and the hand-made copy again"
 else
-  # A fresh LocalStack is empty (no persistence on the free licence): the
-  # legacy store again, and the AWS destination reconciled with it.
-  for p in seed destinations; do
-    "$VULT_ROOT/scripts/ansible.sh" "$p" >"$BUILD_DIR/up-$p.log" 2>&1 || {
-      tail -20 "$BUILD_DIR/up-$p.log" >&2
-      die "up: LocalStack started empty and ansible $p failed (make $p)"
-    }
-  done
-  step cloud "localstack started ($before before), legacy store seeded, AWS destination reconciled"
+  run "the LocalStack reconcile" reconcile ./scripts/ansible.sh reconcile-localstack
+  step cloud "localstack started ($before before): Sync wrote the deploy token's copy back"
 fi
-"$VULT_ROOT/scripts/ansible.sh" people >"$BUILD_DIR/up-people.log" 2>&1 || {
-  tail -20 "$BUILD_DIR/up-people.log" >&2
-  die "up: the credentials could not be checked (make people)"
-}
-step credentials "$(jq -r 'if .changed_total == 0 then "kept: Saskia'"'"'s login as declared" else "set \(.changed_total) (was not as declared)" end' "$BUILD_DIR/ansible-stats/people.json")"
+
+before=$(was vult-booking)
+agent_before=$(was vult-booking_agent)
+run "the workload" workload ./scripts/workload-up.sh
+if [ "$act" -ge 2 ] && { [ "$agent_before" != running ] || [ "$(podman inspect vult-booking_agent --format '{{.State.Health.Status}}' 2>/dev/null)" != healthy ]; }; then
+  # A stopped Agent lost its tmpfs token and its secret id is spent (D9, D16).
+  podman container exists vult-booking_agent && [ "$(podman inspect vult-booking_agent --format '{{.State.Health.Status}}' 2>/dev/null)" = healthy ] ||
+    run "Vault Agent's fresh login" agent ./scripts/ansible.sh agent
+  step workload "booking ($before before) and Vault Agent: a fresh single-use secret id, logged in again"
+else
+  step workload "$([ "$before" = running ] && echo 'kept: booking and tide-agent running' || echo "booking and tide-agent started ($before before)")"
+fi
+
 before=$(was vult-api)
-ids() { podman inspect --format '{{.Id}}' vult-api vult-web 2>/dev/null | paste -sd' ' -; }
-ids_before=$(ids)
-"$VULT_ROOT/scripts/app-up.sh" >"$BUILD_DIR/up-app.log" 2>&1 || {
-  cat "$BUILD_DIR/up-app.log" >&2
-  die "up: the app did not come up (make app-logs)"
-}
-# Compose recreates a container whose image was rebuilt: say so, not "kept".
-if [ "$before" != running ]; then step app "api, web started ($before before)"
-elif [ "$(ids)" != "$ids_before" ]; then step app "recreated: api or web had a new image or settings"
-else step app "kept: api, web running"; fi
-step init "one-shot web-init removed after a successful start"
-echo "up: done. make verify to check, make doctor if something looks wrong, make show-ready before a talk."
+run "the console" app ./scripts/app-up.sh
+step app "$([ "$before" = running ] && echo 'kept: ' )api and web; one-shot web-init removed"
+echo "up: act $act, done in $(($(date +%s) - t0))s. make verify to check, make doctor if something looks wrong, make show-ready before a talk."

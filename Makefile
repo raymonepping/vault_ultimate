@@ -33,7 +33,7 @@ endef
 	app-build app-down app-rebuild open \
 	up down verify lint test-unit e2e-install test-ui test-ui-headed test-ui-report screenshots \
 	doctor backup clean-slate clean-models identity-verify github-key pki-ca canary disk-check wake-up identity-up data-up ai-up models workload-up before-estate \
-	act-1 act-2 act-3 act-4 act-5 act-6 tf-plan witness scoreboard $(addsuffix -logs,$(STACKS))
+	act-1 act-2 act-3 act-4 act-5 act-6 tf-plan witness scoreboard timeline agent $(addsuffix -logs,$(STACKS))
 
 help: ## Show available commands
 	@awk 'BEGIN {FS = ":.*## "; printf "vault_ultimate: Zero Standing Secrets. Tidewell Ferries loses every standing machine secret on Vault Enterprise 2.2 (Make + Terraform + Ansible)\n"} \
@@ -286,13 +286,19 @@ witness: ## Try every inventory credential with a real request (answers and fing
 scoreboard: ## Read-only: the four numbers from the witness history, with their evidence rows
 	$(call run,scoreboard.sh)
 
+timeline: ## Read-only: act 6's timeline, evidence panel and cited summary from the drill's records
+	$(call run,timeline.sh)
+
+agent: ## (changes state) From act 2: a fresh single-use secret id for the booking app's Vault Agent, which logs in again
+	$(call run,ansible.sh agent)
+
 stage-reset: ## (changes state) Back to act 0 on purpose (D17): every act undone, then the witness must count the act 0 baseline (CONFIRM=yes)
 	$(call run,stage-reset.sh)
 
 probe: ## (changes state, scratch names only) Measure Secrets Sync, Secrets Import and LocalStack; writes docs/capabilities.md
 	$(call run,probe.sh)
 
-rehearsal: ## (changes state) The four acts through the API, and every way they must fail; ends with a fresh stage
+rehearsal: ## (changes state) The six acts through the console API as Saskia, every way they must fail, no value anywhere; starts and ends at act 0
 	$(call run,rehearsal.sh)
 
 show-ready: ## (changes state) Five minutes before the talk: clock-sync, up, stage-reset, verify, open the console
@@ -328,14 +334,19 @@ down: ## (changes state) Stop app, cloud, vault, seal; containers and volumes ar
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
 
-verify: ## End-to-end checks: podman, vault, platform, cloud, stage, app, console, boundary, drift, rehearsal
+verify: ## End-to-end checks: podman, vault, units, platform, stacks, ollama, cloud, app, console, boundary, drift, idempotency, secrets, rehearsal
 	$(call run,verify.sh)
 
 lint: ## Static checks, as in CI: shellcheck, terraform fmt and validate, ansible syntax, node --check
 	$(call run,lint.sh)
 
-test-unit: ## Unit tests, no stack needed: story-check, api, web
+test-unit: ## Unit tests, no stack needed: scripts, api, web, booking, tide-agent, runner
 	@node --test scripts/*.test.js
+	@cd api && NODE_ENV=test node --test 'test/*.test.js'
+	@cd web && node --test test/*.test.js
+	@cd workload/booking && node --test test/*.test.js
+	@cd workload/tide-agent && node --test test/*.test.js
+	@cd runner && node --test test/*.test.js
 	@if [ -f api/package.json ]; then cd api && npm test; fi
 	@if [ -f web/package.json ]; then cd web && npm test; fi
 
@@ -346,17 +357,17 @@ E2E := cd e2e && NODE_EXTRA_CA_CERTS=$(CURDIR)/vault-tls/ca-chain.pem npx playwr
 e2e-install: ## (changes state) Install Playwright and Chromium for the UI suite
 	@cd e2e && npm ci --no-audit --no-fund && npx playwright install chromium
 
-test-ui: ## Playwright: every UI journey, headless (needs make up)
-	@$(E2E) --grep-invert "@shots"
+test-ui: ## Playwright: the whole story through the console (acts 1 to 6, revoke, rotate, reset), axe at 1440x900 and 390x844 (needs make up)
+	@$(E2E)
 
 test-ui-headed: ## Playwright: every UI journey in a visible browser
-	@$(E2E) --grep-invert "@shots" --headed
+	@$(E2E) --headed
 
 test-ui-report: ## Open the last Playwright HTML report
 	@cd e2e && npx playwright show-report
 
-screenshots: ## Playwright: refresh docs/screenshots (desktop + phone)
-	@$(E2E) --grep @shots
+screenshots: ## Playwright: the journey, which refreshes docs/screenshots (desktop + phone) on its way
+	@$(E2E) tests/journey.spec.ts
 
 # ── Maintenance ───────────────────────────────────────────────────────────────
 

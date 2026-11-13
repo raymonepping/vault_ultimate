@@ -2,22 +2,22 @@
 // topbar, the pages as hash routes, left/right arrows between pages, ? for the
 // shortcuts, and the "Vault said" drawer with every API answer this page got.
 import { useCallback, useEffect, useState } from 'react';
-import { Map as MapIcon, DownloadCloud, UploadCloud, RefreshCw, History, ScrollText, LogOut, UserRound, ExternalLink, PanelLeftClose, PanelLeftOpen, Keyboard } from 'lucide-react';
+import { Gauge, ListOrdered, Eye, Siren, History, ScrollText, LogOut, UserRound, ExternalLink, PanelLeftClose, PanelLeftOpen, Keyboard } from 'lucide-react';
 import { call } from './api.js';
 import { useResource, useRoute, useVaultLog } from './hooks.js';
 import { AuthContext, Drawer, tidy } from './components/ui.jsx';
 import Footer from './components/Footer.jsx';
-import Overview from './pages/Overview.jsx';
-import Home from './pages/Home.jsx';
-import Out from './pages/Out.jsx';
-import Change from './pages/Change.jsx';
+import Scoreboard from './pages/Scoreboard.jsx';
+import Acts from './pages/Acts.jsx';
+import Witness from './pages/Witness.jsx';
+import Investigation from './pages/Investigation.jsx';
 import Proof from './pages/Proof.jsx';
 
 export const PAGES = [
-  { id: 'overview', label: 'Overview', title: 'Pulled in once, pushed out everywhere', icon: MapIcon, Page: Overview },
-  { id: 'home', label: 'Bring home', title: 'Bring them home', icon: DownloadCloud, Page: Home },
-  { id: 'out', label: 'Send out', title: 'Send them out', icon: UploadCloud, Page: Out },
-  { id: 'change', label: 'Change once', title: 'Change once', icon: RefreshCw, Page: Change },
+  { id: 'scoreboard', label: 'Scoreboard', title: 'Zero standing secrets', icon: Gauge, Page: Scoreboard },
+  { id: 'acts', label: 'Acts', title: 'The acts', icon: ListOrdered, Page: Acts },
+  { id: 'witness', label: 'Witness', title: 'The witness', icon: Eye, Page: Witness },
+  { id: 'investigation', label: 'Investigation', title: 'The revocation drill', icon: Siren, Page: Investigation },
   { id: 'proof', label: 'Proof', title: 'What happened', icon: History, Page: Proof },
 ];
 
@@ -58,14 +58,15 @@ function NavLinks({ route, className, folded = false }) {
   ));
 }
 
-// Vault and LocalStack, from /api/status (needs the session).
+// Vault, the booking app and the host runner, from /api/status (needs the session).
 function ClusterPill({ status, signedIn }) {
   const h = status.data;
   const usable = h?.nodes?.filter((n) => n.reachable && !n.sealed).length || 0;
-  const lsOk = h?.localstack?.reachable && ['available', 'running'].includes(h.localstack.secretsmanager);
-  const state = !signedIn ? 'unknown' : status.error ? 'critical' : !h ? 'unknown' : usable === 3 && lsOk ? 'healthy' : usable ? 'pending' : 'critical';
+  const appOk = h?.booking?.database === 'up';
+  const runnerOk = h?.runner?.up;
+  const state = !signedIn ? 'unknown' : status.error ? 'critical' : !h ? 'unknown' : usable === 3 && appOk && runnerOk ? 'healthy' : usable ? 'pending' : 'critical';
   const version = h?.nodes?.find((n) => n.version)?.version;
-  const text = !signedIn ? 'signed out' : status.error ? 'API unreachable' : !h ? 'checking' : `${usable}/3 unsealed${version ? `, ${version}` : ''}${lsOk ? '' : ', LocalStack is down'}`;
+  const text = !signedIn ? 'signed out' : status.error ? 'API unreachable' : !h ? 'checking' : `act ${h.act}, ${usable}/3 unsealed${version ? `, ${version}` : ''}${appOk ? '' : ', bookings down'}${runnerOk ? '' : ', runner down'}`;
   return (
     <span className={`cluster-pill ${state}`} role="status" aria-live="polite">
       <span className={`cluster-dot${state === 'healthy' ? ' live' : ''}`} aria-hidden="true" />
@@ -86,7 +87,7 @@ function Person({ me, onSignOut }) {
       </button>
       {open && (
         <div className="user-menu-panel" role="dialog" aria-label="Signed in">
-          <div className="umf-row umf-user">{me.display || me.user}, platform engineer</div>
+          <div className="umf-row umf-user">{me.display || me.user}, {(me.role || 'platform engineer').toLowerCase()}</div>
           <div className="umf-row umf-meta">Entity {me.entity_id}</div>
           <button type="button" className="umf-signout" onClick={onSignOut}>
             <LogOut size={12} aria-hidden="true" /> Sign out
@@ -118,10 +119,11 @@ function useKeys(route, onHelp) {
   }, [route, onHelp]);
 }
 
-// One API answer. A step lists the Vault calls behind it: who made each,
-// Vault's status and its errors verbatim.
+// One API answer: the event it made (who, Vault's status, its errors
+// verbatim, the correlation id), or the refusal.
 function SaidEntry({ e }) {
-  const said = e.body?.event?.said || [];
+  const v = e.body?.event?.vault;
+  const said = v ? [{ method: '', path: e.body.event.what, status: v.status, as: e.body.event.by, errors: v.errors || [] }] : [];
   const ok = e.status >= 200 && e.status < 300;
   return (
     <li className="said-item">
@@ -146,14 +148,18 @@ function SaidEntry({ e }) {
           ))}
         </ol>
       )}
-      {e.body?.event?.summary && <p className="m-0">{e.body.event.summary}</p>}
+      {e.body?.event?.correlation_id && (
+        <p className="m-0 dim">
+          correlation id <code className="mono">{e.body.event.correlation_id}</code>
+        </p>
+      )}
       {!ok && e.body?.error && <p className="m-0">{e.body.error}</p>}
     </li>
   );
 }
 
 export default function App() {
-  const route = useRoute(PAGES.map((p) => p.id), 'overview');
+  const route = useRoute(PAGES.map((p) => p.id), 'scoreboard');
   const page = PAGES.find((p) => p.id === route);
   const me = useResource('session', '/api/session');
   // GET /api/session answers 401 when nobody is signed in: that is "signed out".
@@ -243,7 +249,7 @@ export default function App() {
         <Drawer open={drawer} title="Vault said" onClose={() => setDrawer(false)}>
           <p className="drawer-intro">Every action this page took, newest first, with the Vault calls behind it: who made each call, Vault's status and its errors verbatim. Never a token, password or secret value.</p>
           {log.length === 0 ? (
-            <p className="dim">Nothing yet. Start with Bring home.</p>
+            <p className="dim">Nothing yet. Start with act 1 on the Scoreboard.</p>
           ) : (
             <ol className="said-list">
               {log.map((e) => (

@@ -1,23 +1,30 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createSessions, crossSiteWrite, parseCookies, sessionCookie, Refused, Unauthenticated, COOKIE } from "../lib/session.js";
+import { createSessions, crossSiteWrite, parseCookies, sessionCookie, tokenUser, Refused, Unauthenticated, COOKIE } from "../lib/session.js";
 
-const ok = (lease = 3600) => ({ ok: true, status: 200, json: { auth: { client_token: "tok-saskia", lease_duration: lease, entity_id: "e1", token_policies: ["default", "vult-presenter"] } }, errors: [] });
+// Vault's answer to auth/jwt/login (role person): the policy comes from the
+// external group platform.
+// Measured: no display_name in the answer; the user comes from the token.
+const ok = (lease = 3600, who = "saskia", identity = ["vult-presenter"]) => ({ ok: true, status: 200, json: { auth: { client_token: `tok-${who}`, lease_duration: lease, entity_id: "e1", metadata: { role: "person" }, token_policies: ["default"], identity_policies: identity } }, errors: [] });
+const userOf = (r) => r.json?.auth?.client_token?.replace(/^tok-/, "");
 const req = (cookie, extra = {}) => ({ headers: { cookie, ...extra }, method: "GET" });
 
-test("only saskia may sign in to the console", async () => {
-  const s = createSessions({ login: async () => ok(), revoke: async () => {} });
-  await assert.rejects(s.signIn("mallory", "x"), (e) => e instanceof Refused && e.status === 403);
+test("only saskia with vult-presenter gets a session; anyone else's token is revoked at once", async () => {
+  const revoked = [];
+  const s = createSessions({ revoke: async (t) => revoked.push(t) });
+  await assert.rejects(s.signIn(ok(3600, "teun", []), userOf(ok(3600, "teun", []))), (e) => e instanceof Refused && e.status === 403);
+  await assert.rejects(s.signIn(ok(3600, "mallory"), userOf(ok(3600, "mallory"))), (e) => e instanceof Refused && e.status === 403);
+  assert.deepEqual(revoked, ["tok-teun", "tok-mallory"]);
 });
 
-test("a refused password is Vault's answer, as 401", async () => {
-  const s = createSessions({ login: async () => ({ ok: false, status: 400, errors: ["invalid username or password"] }), revoke: async () => {} });
-  await assert.rejects(s.signIn("saskia", "wrong"), (e) => e.status === 401 && /invalid username/.test(e.message));
+test("a refused login is Vault's answer, as 401", async () => {
+  const s = createSessions({ revoke: async () => {} });
+  await assert.rejects(s.signIn({ ok: false, status: 400, errors: ["error validating token: token is expired"] }), (e) => e.status === 401 && /expired/.test(e.message));
 });
 
 test("the session holds the token server side; the cookie only an id", async () => {
-  const s = createSessions({ login: async () => ok(), revoke: async () => {} });
-  const { sid } = await s.signIn("saskia", "pw");
+  const s = createSessions({ revoke: async () => {} });
+  const { sid } = await s.signIn(ok(), userOf(ok()));
   assert.ok(!sid.includes("tok-saskia"));
   const got = s.get(req(`${COOKIE}=${sid}`));
   assert.equal(got.token, "tok-saskia");
@@ -26,19 +33,19 @@ test("the session holds the token server side; the cookie only an id", async () 
 
 test("idle sessions and expired tokens end", async () => {
   let t = 0;
-  const s = createSessions({ login: async () => ok(10), revoke: async () => {}, now: () => t, idleMs: 5_000 });
-  const { sid } = await s.signIn("saskia", "pw");
+  const s = createSessions({ revoke: async () => {}, now: () => t, idleMs: 5_000 });
+  const { sid } = await s.signIn(ok(10), userOf(ok(10)));
   t = 6_000;
   assert.throws(() => s.get(req(`${COOKIE}=${sid}`)), Unauthenticated);
-  const b = await s.signIn("saskia", "pw");
+  const b = await s.signIn(ok(10), userOf(ok(10)));
   t = 17_000;
   assert.throws(() => s.get(req(`${COOKIE}=${b.sid}`)), Unauthenticated);
 });
 
 test("sign-out revokes the token", async () => {
   const revoked = [];
-  const s = createSessions({ login: async () => ok(), revoke: async (t) => revoked.push(t) });
-  const { sid } = await s.signIn("saskia", "pw");
+  const s = createSessions({ revoke: async (t) => revoked.push(t) });
+  const { sid } = await s.signIn(ok(), userOf(ok()));
   assert.equal(await s.signOut(req(`${COOKIE}=${sid}`)), true);
   assert.deepEqual(revoked, ["tok-saskia"]);
   assert.throws(() => s.get(req(`${COOKIE}=${sid}`)), Unauthenticated);
@@ -66,9 +73,15 @@ test("parseCookies keeps the first value and survives a broken one", () => {
 test("a refused revoke at sign-out is logged, never with the token", async (t) => {
   const lines = [];
   t.mock.method(console, "error", (l) => lines.push(l));
-  const s = createSessions({ login: async () => ok(), revoke: async () => ({ ok: false, status: 403, errors: ["permission denied"] }) });
-  const { sid } = await s.signIn("saskia", "pw");
+  const s = createSessions({ revoke: async () => ({ ok: false, status: 403, errors: ["permission denied"] }) });
+  const { sid } = await s.signIn(ok(), userOf(ok()));
   assert.equal(await s.signOut(req(`${COOKIE}=${sid}`)), true);
   assert.match(lines.join(), /"signout_revoke":"failed","status":403/);
   assert.ok(!lines.join().includes("tok-saskia"));
+});
+
+test("the user comes from the access token Vault accepted; garbage names nobody", () => {
+  const jwt = `x.${Buffer.from(JSON.stringify({ preferred_username: "saskia" })).toString("base64url")}.y`;
+  assert.equal(tokenUser(jwt), "saskia");
+  assert.equal(tokenUser("not-a-jwt"), null);
 });

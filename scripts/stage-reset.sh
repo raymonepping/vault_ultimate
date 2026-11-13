@@ -44,10 +44,11 @@ step canary ./scripts/ansible.sh canary
 unset VULT_RESET
 rm -f "$BUILD_DIR"/acts/act-*.json
 
-if [ -d "$BUILD_DIR/witness/history" ]; then
-  mkdir -p "$BUILD_DIR/witness/archive"
-  mv "$BUILD_DIR/witness/history" "$BUILD_DIR/witness/archive/$(date -u +%Y%m%dT%H%M%SZ)"
-fi
+stamp=$(date -u +%Y%m%dT%H%M%SZ)
+mkdir -p "$BUILD_DIR/witness/archive"
+[ ! -d "$BUILD_DIR/witness/history" ] || mv "$BUILD_DIR/witness/history" "$BUILD_DIR/witness/archive/$stamp"
+# Act 6's drill records: kept beside the history they belong to.
+[ ! -d "$BUILD_DIR/act6" ] || mv "$BUILD_DIR/act6" "$BUILD_DIR/witness/archive/$stamp-act6"
 if [ "$(vult_container_state vult-api)" = running ]; then
   podman kill --signal USR2 vult-api >/dev/null || echo "stage-reset: the API could not clear its event list (podman logs vult-api)" >&2
 fi

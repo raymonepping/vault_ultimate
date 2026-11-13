@@ -41,7 +41,10 @@ vault-platform)
   TF_VAR_cert_ttl=$(secs "$(vult_conf VULT_CERT_TTL)")
   TF_VAR_lease_ttl=$(secs "$(vult_conf VULT_LEASE_TTL)")
   TF_VAR_booking_ip=$(vult_conf VULT_BOOKING_IP)
-  export TF_VAR_namespace TF_VAR_sync_secret TF_VAR_act TF_VAR_cert_ttl TF_VAR_lease_ttl TF_VAR_booking_ip
+  # Act 4: the LDAP engine's connection is Ansible's (it carries a password);
+  # the static role can exist only once the wave has written it.
+  TF_VAR_ldap_connected=$([ -f "$BUILD_DIR/ldap-connected" ] && echo true || echo false)
+  export TF_VAR_namespace TF_VAR_sync_secret TF_VAR_act TF_VAR_cert_ttl TF_VAR_lease_ttl TF_VAR_booking_ip TF_VAR_ldap_connected
   ;;
 esac
 

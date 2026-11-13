@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client';
 import './styles/vault-glass.css';
 import './styles/shell.css';
 import './styles/app.css';
-import './styles/sync.css';
+import './styles/console.css';
 import App from './App.jsx';
 
 createRoot(document.getElementById('root')).render(

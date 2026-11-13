@@ -10,7 +10,7 @@ until [ -s "$password_file" ]; do
   [ "$attempt" -ge 30 ] && { echo "[entrypoint] $password_file never appeared" >&2; exit 1; }
   sleep 2
 done
-KC_BOOTSTRAP_ADMIN_USERNAME=admin
+KC_BOOTSTRAP_ADMIN_USERNAME="admin"
 KC_BOOTSTRAP_ADMIN_PASSWORD="$(cat "$password_file")"
 export KC_BOOTSTRAP_ADMIN_USERNAME KC_BOOTSTRAP_ADMIN_PASSWORD
 exec /opt/keycloak/bin/kc.sh "$@"

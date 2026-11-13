@@ -1,11 +1,11 @@
-// lib/session.js: the presenter's session (D13).
+// lib/session.js: the presenter's session (D14).
 //
-// The presenter signs in on the console's own form as saskia. The API logs her
-// in through userpass in namespace tidewell and keeps the Vault token server
-// side; the browser holds only an opaque cookie (HttpOnly, Secure,
-// SameSite=Strict). Her token is the only one the API uses: every act runs
-// as her. Sign-out is POST only and revokes the token. Passwords are never
-// logged or stored here.
+// Saskia signs in through Keycloak (lib/oidc.js); the API trades her access
+// token for her own Vault token (auth/jwt/login, role person) and keeps it
+// server side; the browser holds only an opaque cookie (HttpOnly, Secure,
+// SameSite=Strict). Only a token that carries vult-presenter (group platform)
+// gets a session. Her token is the only one the API uses for Vault: the audit
+// log names her. Sign-out is POST only and revokes the token.
 import { randomBytes } from "node:crypto";
 import { call, ns } from "./vault.js";
 
@@ -55,22 +55,28 @@ export function crossSiteWrite(req, consoleUrls = CONSOLE_URLS) {
   return Boolean(origin) && !consoleUrls.includes(origin);
 }
 
-// createSessions({ login, revoke, now }): the store. login(user, password)
-// -> a Vault call result; revoke(token).
-export function createSessions({ login, revoke, now = () => Date.now(), idleMs = IDLE_MS } = {}) {
+// createSessions({ revoke, now }): the store. signIn(result, user) takes
+// Vault's answer to the jwt login and the user the same access token names
+// (preferred_username: Vault's login answer has no display name, measured);
+// the name counts only because Vault has just accepted that token.
+export const PRESENTER_POLICY = "vult-presenter";
+export function createSessions({ revoke, now = () => Date.now(), idleMs = IDLE_MS } = {}) {
   const sessions = new Map(); // sid -> { user, token, exp, seen, entity, policies }
   setInterval(() => {
     for (const [k, v] of sessions) if (now() - v.seen > idleMs || v.exp < now()) sessions.delete(k);
   }, 60_000).unref();
 
   return {
-    async signIn(username, password) {
-      if (username !== REQUESTOR) throw new Refused(403, `only ${REQUESTOR} signs in to the console`);
-      const r = await login(username, password);
-      if (!r.ok) throw new Refused(r.status === 400 ? 401 : r.status, r.errors[0] || "Vault refused the sign-in");
+    async signIn(r, user) {
+      if (!r?.ok) throw new Refused(r?.status === 400 ? 401 : r?.status || 502, r?.errors?.[0] || "Vault refused the sign-in");
       const a = r.json.auth;
+      const policies = [...(a.token_policies || []), ...(a.identity_policies || [])];
+      if (a.metadata?.role !== "person" || !policies.includes(PRESENTER_POLICY) || user !== REQUESTOR) {
+        await revoke(a.client_token).catch(() => {});
+        throw new Refused(403, `only ${REQUESTOR} (group platform) signs in to the console`);
+      }
       const sid = randomId();
-      sessions.set(sid, { user: username, token: a.client_token, exp: now() + a.lease_duration * 1000, seen: now(), entity: a.entity_id, policies: a.token_policies });
+      sessions.set(sid, { user, token: a.client_token, exp: now() + a.lease_duration * 1000, seen: now(), entity: a.entity_id, policies });
       return { sid, maxAge: a.lease_duration };
     },
     get(req) {
@@ -98,7 +104,14 @@ export function createSessions({ login, revoke, now = () => Date.now(), idleMs =
   };
 }
 
-// The real login and revoke (userpass in tidewell).
-export const vaultLogin = (user, password) =>
-  call(null, "POST", ns(`auth/userpass/login/${encodeURIComponent(user)}`), { body: { password } });
+// The real login and revoke: Keycloak's access token for her Vault token.
+export const vaultLogin = (jwt) => call(null, "POST", ns("auth/jwt/login"), { body: { role: "person", jwt } });
+// The user an access token names (its signature is Vault's to check, at login).
+export function tokenUser(jwt) {
+  try {
+    return JSON.parse(Buffer.from(String(jwt).split(".")[1], "base64url").toString("utf8")).preferred_username ?? null;
+  } catch {
+    return null;
+  }
+}
 export const vaultRevoke = (token) => call(token, "POST", ns("auth/token/revoke-self"));

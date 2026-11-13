@@ -6,7 +6,8 @@
 # response-wrapped (60 s, single use): Agent unwraps it, logs in once, and
 # from then on renews its token. The token lives in a tmpfs sink only.
 # templates: the database credential (a lease Agent renews; a new one when
-# it ends), and from act 3 the one-hour certificate (tls.hcl).
+# it ends), the CI deploy token from KV, and from act 3 the one-hour
+# certificate (tls.hcl).
 pid_file = "/tmp/agent.pid"
 
 vault {
@@ -32,6 +33,9 @@ auto_auth {
 
 template_config {
   exit_on_retry_failure = false
+  # KV secrets are re-read this often: a rotated deploy token reaches the app
+  # within seconds (act 6).
+  static_secret_render_interval = "15s"
 }
 
 template {
@@ -39,5 +43,15 @@ template {
   perms       = "0600"
   contents    = <<-EOT
   {{ with secret "database/creds/booking" }}{"username": "{{ .Data.username }}", "password": "{{ .Data.password }}", "lease_id": "{{ .LeaseID }}", "lease_seconds": {{ .LeaseDuration }}}{{ end }}
+  EOT
+}
+
+# The CI deploy token as Vault holds it (kv ci/deploy-token, synced to GitHub
+# and LocalStack since act 1): the app's deploy check follows a rotation.
+template {
+  destination = "/vault/out/deploy.json"
+  perms       = "0600"
+  contents    = <<-EOT
+  {{ with secret "kv/data/ci/deploy-token" }}{"token": "{{ .Data.data.value }}"}{{ end }}
   EOT
 }

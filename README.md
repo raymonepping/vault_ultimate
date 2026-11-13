@@ -1,134 +1,159 @@
-# vault_ultimate: Bring Them Home, Send Them Out
+# vault_ultimate: Zero Standing Secrets
 
-Secrets Import and Secrets Sync on Vault Enterprise 2.2, on one Mac with
-Podman. Vault pulls a company's legacy secrets out of an AWS-shaped store
-(LocalStack), becomes their system of record, and pushes them out to GitHub
-Actions and back to the AWS-shaped store, so one change in Vault lands
-everywhere.
+A fictional ferry company runs a real, plain booking app on the estate most
+companies have: a database password in a file, an LDAP bind password nobody
+rotates, a year-long certificate, a deploy token pasted into CI, an AI agent
+with a static key. A witness tries every one of those credentials for real
+and a scoreboard counts what still works. Six acts on Vault Enterprise 2.2
+migrate the same running app, one class of secret per act, while bookings
+keep working, until only one counted residual stands and everything else
+lives for minutes.
 
 > **Terraform builds the house. Ansible decorates it. Vault keeps the keys.
 > Make is the front door.**
 
-![The two-way map: pulled into Vault, pushed out to GitHub Actions and the AWS copy](docs/screenshots/overview.png)
+![The scoreboard at act 0: six standing secrets, the longest lifetime never](docs/screenshots/scoreboard-act0.png)
 
 ## What it proves, and what it only illustrates
 
-**Proves:** `vault operator import` reads secrets from an AWS Secrets
-Manager API and writes them to KV v2 with the source's tags as labels, after
-a plan that writes nothing. Secrets Sync, set up in a child namespace,
-pushes a KV secret to a GitHub repository through a GitHub App (no person's
-token) and to AWS Secrets Manager. A new version reaches both within about a
-second, and removing an association deletes the copy. The presenter's own
-token does every step, so Vault's audit log names her. Every claim is
-measured in [docs/capabilities.md](docs/capabilities.md) and checked again by
-`make rehearsal`.
+**Proves**, each claim measured by `make rehearsal` and `make test-ui`:
 
-**Illustrates only:** LocalStack stands in for AWS Secrets Manager, with
-synthetic keys; Tidewell Ferries, Saskia and every value are invented; one
-presenter drives everything; one Mac is not production.
+- A running app loses its static database password, its year-long
+  certificate, its Keycloak client secret, the LDAP bind password behind its
+  sign-in and its agent's static key, and bookings keep working.
+- The witness tries each credential against its target (a PostgreSQL login,
+  an LDAP bind, a Keycloak client grant, the booking API, a TLS handshake
+  with an OCSP request to Vault) and keeps the answer verbatim. Before:
+  `VALID UNTIL infinity`. After: `password authentication failed`,
+  `OCSP Cert Status: revoked`, `Invalid credentials (49)`, `invalid_client`.
+- What replaced them lives minutes: a 15-minute database lease, a one-hour
+  certificate, a 300-second delegation token.
+- One revocation by a named person ends the leased credential's open
+  PostgreSQL session in under a second; one rotation reaches GitHub and
+  LocalStack, by their own clocks.
+- An AI agent acting for a clerk rebooks a cancelled crossing with the
+  clerk's delegated authority, and Vault, not the app, refuses its
+  overreach: `CEILING_POLICY_DENIED`.
 
-## The four acts
+**Illustrates only:** Tidewell Ferries, its people and every value are
+invented; LocalStack stands in for AWS Secrets Manager; Ansible stands in
+for a platform that vouches for workloads; one presenter drives everything;
+one Mac is not production. The CI deploy token stays static on purpose: a
+residual, counted and explained (GitHub's runners cannot reach this lab's
+Vault).
 
-| Act | Page | What happens | Vault feature |
-| --- | --- | --- | --- |
-| Bring them home | Bring home | Plan, then import the three legacy secrets into `kv/parcel/` | Secrets Import |
-| Send them out | Send out | Push `parcel/delivery-api` to GitHub Actions and to the AWS copy | Secrets Sync |
-| Change once | Change once | Rotate the key in Vault; watch both copies follow | KV v2 + Secrets Sync |
-| Let go | Send out | Remove an association; Vault deletes the copy | Secrets Sync |
+## The seven acts
 
-The story: [docs/STORY.md](docs/STORY.md). A value is never on screen: the
-console shows fingerprints (the first 8 hex of SHA-256).
+| Act | What happens | Removes |
+| --- | --- | --- |
+| 0 | The before estate; a clerk's support note says the app still runs on the old password | (the baseline: 6 standing) |
+| 1 | Secrets Import brings the legacy secrets into KV; Secrets Sync takes over the hand-made GitHub and LocalStack copies | the unmanaged copies |
+| 2 | A response-wrapped, single-use AppRole secret id; Vault Agent renders a 15-minute database lease | the static database password |
+| 3 | Agent issues one-hour certificates; the year-long one is revoked (OCSP) | the year-long certificate |
+| 4 | Vault's LDAP engine rotates Keycloak's bind password; Keycloak takes the app's Vault certificate (mutual TLS) instead of a client secret | the bind password, the client secret |
+| 5 | The app signs a delegation token with a Transit key that never leaves Vault; the agent rebooks with the clerk's authority, inside its ceiling | the agent's static key |
+| 6 | The revocation drill: a lease revoked, its session gone, Agent back on a new lease, the deploy token rotated, a timeline from the systems' own records | the leaked lease, the old deploy token |
+
+The story in full: [docs/STORY.md](docs/STORY.md).
+
+## The scoreboard
+
+Four numbers, each opening the witness rows it rests on:
+**standing secrets** (credentials that work right now), **longest remaining
+lifetime** ("never" before, minutes after), **unmanaged copies** (outside
+Vault and not kept current), and **the leak window** (from the act 0 note to
+the first run that saw the password refused, to the second). A target that
+does not answer is unknown, never "refused". How the evidence is built:
+[docs/evidence-model.md](docs/evidence-model.md).
+
+| After act | 0 | 1 | 2 | 3 | 4 | 5 | 6 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Standing | 6 | 6 | 5 | 4 | 2 | 1 (residual) | 1 (residual) |
+| Unmanaged copies | 6 | 1 | 0 | 0 | 0 | 0 | 0 |
+| Longest lifetime | never | never | never | never | never | about 1 h | about 1 h |
 
 ## Prerequisites
 
-- macOS on Apple Silicon, Podman 6 with a running machine (8 GiB or more).
-  Disk: about 2.6 GB (measured 2026-11-12: vault-enterprise 571 MB,
-  localstack 1.2 GB, the API 131 MB on top of the Vault image, web 63 MB,
-  node, nginx and alpine 242 MB, the volumes about 250 MB), plus
-  Playwright's Chromium for `make test-ui`.
-- Terraform 1.14, ansible-core 2.21, Node 24 or later, `jq`, `openssl`,
-  `shellcheck` (for `make lint`), and the `gh` CLI signed in
-  (`gh auth status`) for `make github-evidence`.
-- A Vault Enterprise licence with Secrets Sync, Secrets Import and
-  Namespaces: `VAULT_LICENSE` in `.env`.
-- A free LocalStack account: its auth token as `LOCALSTACK_AUTH_TOKEN` in
-  `.env`. LocalStack keeps nothing across a restart on the free licence;
-  `make up` seeds it again.
-- A GitHub App with Actions secrets read and write on one repository: its
-  App ID and installation ID in `config/defaults.conf` (`make
-  github-installation` prints the installation ID once the key is in place),
-  its private key in `.secrets/github/` (0600). The secrets it writes are named `TIDEWELL_*`.
+- An Apple Silicon Mac with Podman (rootless, the Podman machine running),
+  Terraform, Ansible, Node 24 or later, `jq`, `gh` (logged in) and about
+  20 GiB free disk (`make disk-check`; the lab never prunes).
+- A Vault Enterprise licence with Secrets Sync, Secrets Import, Namespaces
+  and Agentic IAM: `VAULT_LICENSE` in `.env`.
+- A free LocalStack account: `LOCALSTACK_AUTH_TOKEN` in `.env`.
+- A GitHub App with `secrets: write` and `metadata: read`, installed on this
+  repository (the lab uses `VaultSyncDemo`; its key is copied by path from
+  `../vault_sync/.secrets/github/`). The lab never creates, deletes or
+  changes a repository, a workflow or an app setting; the only GitHub objects
+  it writes are Actions secrets with synthetic values.
 
 ## First run
 
 ```bash
-make env-init          # .env from .env.example; put VAULT_LICENSE and LOCALSTACK_AUTH_TOKEN in it
-make license           # installs the licence to .secrets/vault/vault.hclic, never printed
-make lab               # every phase, then the gates (about two and a half minutes)
-make people-copy-password   # Saskia's password on the clipboard, never printed
+make env-init            # .env from .env.example; fill VAULT_LICENSE and LOCALSTACK_AUTH_TOKEN
+make license && make gen-certs && make trust-root
+make lab                 # every phase, then the gates (idempotency, drift, secret scan, boundary)
 ```
 
-Then open the console at <https://localhost:14201/> and sign in as `saskia`.
-The lab CA is in no browser's trust store: `make trust-root` adds it to the
-macOS keychain (sudo), or accept the warning.
-
-`make up` on a lab that was never built runs `make lab` itself, so the
-Lab Index (vault_lab_index) Start button works from nothing.
+Then open the console at <https://localhost:14201> and sign in as Saskia
+through Keycloak (`make people-copy-password` puts her password on the
+clipboard).
 
 ## Daily
 
 ```bash
-make up                # or the Lab Index's Start: everything back, volumes kept (55 s)
-make down              # or its Stop: every container stops, every volume stays (10 s)
-make show-ready        # five minutes before a talk: up, fresh stage, verify
-make github-evidence   # what GitHub itself says (names and update times) for the console
-make stage-reset CONFIRM=yes   # nothing synced (copies deleted), nothing imported
-make doctor            # what is wrong, and which command fixes it
+make up                  # start (the Lab Index's Start button runs make up RUNTIME=podman)
+make down                # stop every stack and the host runner; volumes kept
+make wake-up             # after the Mac slept: clock, Vault, Agent's login, one screen of what it fixed
+make show-ready          # five minutes before a talk: up, a stage reset, verify, the console
+make stage-reset CONFIRM=yes   # back to act 0 on purpose, static password and all
+make doctor              # what is wrong, and the command that fixes it
 ```
+
+The acts run from the console's act rail, or from the terminal: `make
+act-1` to `make act-6`, in order only. `make witness`, `make scoreboard`,
+`make tf-plan ACT=6` (what Terraform still has to declare) and `make
+timeline` are read-only.
 
 ## Checks
 
-| Command | What it proves |
-| --- | --- |
-| `make verify` | 77 checks: the cluster, the platform, the stage, LocalStack, the app, the console, the token boundary, drift, idempotency, a secret scan and `make rehearsal` |
-| `make rehearsal` | 47 checks through the console: the four acts against Vault, LocalStack and GitHub, and every way they must fail |
-| `make boundary` | 50 checks: each tool token and Saskia may do their job and nothing else |
-| `make test-ui` | 22 Playwright tests: the four acts from the UI, axe WCAG 2.1 AA on every page (desktop and phone), TLS and CSP |
-| `make probe` | 39 cases in a scratch namespace: what Vault 2.2.1 Secrets Sync and Secrets Import actually do |
-| `make test-unit`, `make lint` | unit tests (33) and static checks, no stack needed |
+```bash
+make test-unit           # scripts, api, web, booking, tide-agent, runner
+make lint                # shellcheck, terraform fmt and validate, ansible-lint, node --check
+make verify              # the running lab: every stack, the presenter's rights, drift, the rehearsal
+make rehearsal           # the six acts through the console API, every way they must fail
+make test-ui             # Playwright: the whole story in a browser, axe at 1440x900 and 390x844
+```
 
 ## Ports (127.0.0.1)
 
-| Service | Address |
+| Port | What |
 | --- | --- |
-| Console | <https://localhost:14201/> |
-| API (behind the console) | <https://localhost:14201/api/healthz> |
-| vault-1 to vault-3 | <https://localhost:19701/ui>, 19702, 19703 |
-| vault-s (the seal Vault) | <https://localhost:19700> |
-| LocalStack (AWS API) | <https://localhost:14666> |
+| 14201 | the console (TLS 1.3) |
+| 14202 | the booking app (TLS, plain on purpose) |
+| 14203 | Keycloak |
+| 14666 | LocalStack |
+| 19700 | vault-s (the seal Vault) |
+| 19701 to 19703 | vault-1 to vault-3 |
+| 14209 | the host runner (loopback only, token required) |
 
-The API answers only behind the console's TLS. Every container, compose
-project and volume carries the prefix `vult-`.
+PostgreSQL, OpenLDAP, Ollama, the AI agent and the console API are not
+published. Every container is `vult-`, the network `vult-internal`.
 
 ## Where things are
 
-- `Makefile`, `scripts/`: every operation; `scripts/phases.txt` is the only
-  phase list.
-- `terraform/vault-seal`, `terraform/vault-platform`: the declared structure
-  (namespace `tidewell`, KV, userpass, the presenter's policy, audit devices).
-- `ansible/`: order and moment (init, tokens, the GitHub App, both sync
-  destinations, the legacy store, the presenter, the stage, validate).
-- `config/story.json` (the legacy secrets, what syncs, what rotates),
-  `config/defaults.conf`.
-- `vault/`: server HCL and bootstrap policies. `compose/`: the stacks.
-- `api/` (Node 24, no dependencies, on the Vault Enterprise image for
-  `vault operator import`), `web/` (React 19 + Vite, Vault daylight glass),
-  `e2e/` (Playwright).
-- Docs: [architecture](docs/architecture.md), [operations](docs/operations.md),
-  [security model](docs/security-model.md), [ownership](docs/ownership.md),
-  [capabilities](docs/capabilities.md), [design](DESIGN.md),
-  [state](docs/STATE.md).
+| Path | What |
+| --- | --- |
+| `config/` | `defaults.conf`, `story.json`, `inventory.json` (every credential the witness tries) |
+| `terraform/vault-platform` | act-aware: `var.act` gates each act's mounts, roles and policies |
+| `ansible/act-N.yml` | the waves; `stage-reset.yml`, `before-estate.yml` |
+| `compose/` | the eight stacks |
+| `workload/` | the booking app and the AI agent (Tidewell's own code) |
+| `api/`, `web/` | the console (Node 24 API, React 19), Vault daylight glass |
+| `runner/` | the host runner the console asks for waves |
+| `e2e/` | Playwright |
+| `docs/` | [architecture](docs/architecture.md), [operations](docs/operations.md), [security model](docs/security-model.md), [evidence model](docs/evidence-model.md), [ownership](docs/ownership.md), [capabilities](docs/capabilities.md) (measured), [state](docs/STATE.md) |
 
 ## Licence
 
-[GPL-3.0](LICENSE).
+MIT for the code in this repository. Vault Enterprise, Keycloak, OpenLDAP,
+PostgreSQL, LocalStack and Ollama keep their own licences.

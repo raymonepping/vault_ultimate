@@ -17,6 +17,7 @@
     v_token: "{{ lookup('ansible.builtin.file', vult_tokens_dir + '/ansible-platform') }}"
     w: "{{ vult_root }}/.secrets/workload"
     psql: podman exec -i vult-postgres gosu postgres psql -v ON_ERROR_STOP=1 -q -d tidewell
+    pg_url_head: "postgresql://{{ '{{' }}username{{ '}}' }}:{{ '{{' }}password{{ '}}' }}"
   tasks:
     - name: Read Vault's connection to PostgreSQL
       ansible.builtin.uri:
@@ -36,7 +37,8 @@
         body_format: json
         body:
           plugin_name: postgresql-database-plugin
-          connection_url: "postgresql://{{ '{{' }}username{{ '}}' }}:{{ '{{' }}password{{ '}}' }}@postgres:5432/tidewell?sslmode=verify-full&sslrootcert=/vault/config/tls/ca-chain.pem"
+          # Vault's own placeholders ({{ '{{' }}username{{ '}}' }}), not Ansible's.
+          connection_url: "{{ pg_url_head }}@postgres:5432/tidewell?sslmode=verify-full&sslrootcert=/vault/config/tls/ca-chain.pem"
           username: postgres
           password: "{{ lookup('ansible.builtin.file', vult_root + '/.secrets/data/pg-bootstrap') | trim }}"
           allowed_roles: [booking]
@@ -85,7 +87,7 @@
       register: retired
       changed_when: "'VULT_CHANGED' in retired.stderr"
 
-    - name: booking.env no longer holds a database credential
+    - name: The app's booking.env no longer holds a database credential
       ansible.builtin.lineinfile:
         path: "{{ w }}/booking.env"
         regexp: '^DB_(USER|PASSWORD)='
@@ -102,7 +104,7 @@
         [ "$rc" = 0 ] || { podman logs vult-booking_init >&2; exit 1; }
         $c rm -f booking-init >/dev/null
       args: { executable: /bin/bash }
-      when: envfile.changed
+      when: envfile.changed # noqa: no-handler  the next task checks the app on the new file; a handler would run after it
       changed_when: true
 
     - name: Bookings still work on the lease

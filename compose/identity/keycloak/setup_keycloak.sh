@@ -104,7 +104,8 @@ CLI=$(ensure_client tidewell-cli true "" true)
 # created and on a stage reset only (act 4 may replace client authentication,
 # probe question 7; a rerun must not undo it).
 if [ -f /tmp/new-client-tidewell-booking ] || [ "${VULT_SET_BOOKING_SECRET:-0}" = 1 ]; then
-  "$KC" update "clients/$BOOKING" -r "$REALM" -s "secret=$(cat "$SECRETS/booking-client-secret")" >/dev/null
+  "$KC" update "clients/$BOOKING" -r "$REALM" -s clientAuthenticatorType=client-secret \
+    -s "secret=$(cat "$SECRETS/booking-client-secret")" >/dev/null
   echo "  * booking client secret set from .secrets/identity (never printed)"
 fi
 

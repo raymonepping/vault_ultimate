@@ -1,0 +1,226 @@
+# act-5 (ansible, make act-5): the agent loses its key (D21, probe Q6).
+#
+#   1. tide-agent in Vault's agent registry: its entity, owner bookings, the
+#      ceiling vult-agent-ceiling (rebook only); the permits the delegation
+#      tokens read (kv/permits/<action>/<crossing>, synthetic)
+#   2. Vault Agent with its API proxy (proxy.hcl): the booking app signs the
+#      clerk's delegation tokens with Transit key obo through it
+#   3. the static key leaves booking.env and tide-agent.env: the booking API
+#      no longer takes it, the agent no longer has it
+#   4. the weather cancels the day 1 11:00; Teun (signed in through Keycloak)
+#      asks the agent to rebook its passengers onto the 15:30; the agent acts
+#      with Teun's delegation for that crossing, and Vault allows it
+#   5. a scripted overreach, independent of the model: the agent tries to
+#      cancel the crossing's bookings with the same delegation; Vault refuses
+#      (its answer verbatim)
+# Evidence (answers, never tokens): .build/acts/act-5-evidence.json.
+- name: Act 5, the agent loses its key
+  hosts: localhost
+  gather_facts: false
+  vars:
+    v_ns: "{{ vult_cluster_addr }}/v1/{{ vult_namespace }}"
+    v_token: "{{ lookup('ansible.builtin.file', vult_tokens_dir + '/ansible-platform') }}"
+    w: "{{ vult_root }}/.secrets/workload"
+    story: "{{ lookup('ansible.builtin.file', vult_root + '/config/story.json') | from_json }}"
+    from_crossing: "d{{ story.weather_cancel.day }}-{{ story.weather_cancel.departure | replace(':', '') }}"
+    to_crossing: "d{{ story.weather_cancel.day }}-{{ story.weather_cancel.rebook_to | replace(':', '') }}"
+  tasks:
+    # ── 1. The registry and the permits ─────────────────────────────────────
+    - name: The entity of tide-agent
+      ansible.builtin.uri:
+        url: "{{ v_ns }}/identity/entity/name/tide-agent"
+        ca_path: "{{ vult_ca }}"
+        headers: { X-Vault-Token: "{{ v_token }}" }
+      register: entity
+      check_mode: false
+
+    - name: Is tide-agent registered?
+      ansible.builtin.uri:
+        url: "{{ v_ns }}/agent-registry/registration/display-name/tide-agent"
+        ca_path: "{{ vult_ca }}"
+        headers: { X-Vault-Token: "{{ v_token }}" }
+        # Not registered answers 400 "agent with provided display_name does not exist" (measured).
+        status_code: [200, 400]
+      register: reg
+      failed_when: reg.status == 400 and 'does not exist' not in (reg.json.errors | default([]) | join(' '))
+      check_mode: false
+
+    - name: Register tide-agent with its ceiling (rebook only)
+      ansible.builtin.uri:
+        url: "{{ v_ns }}/agent-registry/register"
+        method: POST
+        ca_path: "{{ vult_ca }}"
+        headers: { X-Vault-Token: "{{ v_token }}" }
+        body_format: json
+        body:
+          display_name: tide-agent
+          entity_id: "{{ entity.json.data.id }}"
+          owner: bookings
+          description: "Tidewell's AI agent (fictional): rebooks passengers for a clerk"
+          ceiling_policies: [vult-agent-ceiling]
+        status_code: [200, 204]
+      when: reg.status == 400
+      changed_when: true
+
+    - name: Which permits exist?
+      ansible.builtin.uri:
+        url: "{{ v_ns }}/kv/metadata/permits/{{ item }}/{{ from_crossing }}"
+        ca_path: "{{ vult_ca }}"
+        headers: { X-Vault-Token: "{{ v_token }}" }
+        status_code: [200, 404]
+      loop: [rebook, cancel]
+      register: permits
+      check_mode: false
+
+    - name: The permits the delegation tokens read (synthetic)
+      ansible.builtin.uri:
+        url: "{{ v_ns }}/kv/data/permits/{{ item.item }}/{{ from_crossing }}"
+        method: POST
+        ca_path: "{{ vult_ca }}"
+        headers: { X-Vault-Token: "{{ v_token }}" }
+        body_format: json
+        body: { data: { permit: "{{ item.item }} on {{ from_crossing }} (synthetic demo permit)" } }
+      loop: "{{ permits.results }}"
+      loop_control: { label: "{{ item.item }}/{{ from_crossing }}" }
+      when: item.status == 404
+      changed_when: true
+
+    # ── 2. Agent's API proxy ────────────────────────────────────────────────
+    - name: Does Agent run its API proxy?
+      ansible.builtin.command: podman exec vult-booking_agent test -f /vault/in/config/proxy.hcl
+      register: proxy
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Agent again, with its API proxy
+      ansible.builtin.include_role:
+        name: booking_agent
+      vars:
+        booking_agent_ns: "{{ v_ns }}"
+        booking_agent_token: "{{ v_token }}"
+        booking_agent_act: 5
+      when: proxy.rc != 0
+
+    # ── 3. The static key goes ──────────────────────────────────────────────
+    - name: The static key leaves both .env files
+      ansible.builtin.lineinfile:
+        path: "{{ w }}/{{ item }}"
+        regexp: '^AGENT_API_KEY='
+        state: absent
+      loop: [booking.env, tide-agent.env]
+      register: envfiles
+      no_log: true
+
+    - name: The apps' copies follow (booking-init, in place)
+      ansible.builtin.shell: |
+        set -euo pipefail
+        c="{{ vult_root }}/scripts/compose.sh workload"
+        $c up -d --force-recreate --no-deps booking-init
+        rc=$(podman wait vult-booking_init)
+        [ "$rc" = 0 ] || { podman logs vult-booking_init >&2; exit 1; }
+        $c rm -f booking-init >/dev/null
+      args: { executable: /bin/bash }
+      when: envfiles.changed # noqa: no-handler  the next task proves the key is refused; a handler would run after it
+      changed_when: true
+
+    - name: The booking API no longer takes the static key
+      ansible.builtin.uri:
+        url: "{{ vult_booking_url }}/api/me"
+        ca_path: "{{ vult_ca }}"
+        headers: { X-Agent-Key: "{{ lookup('ansible.builtin.file', w + '/agent-api-key') }}" }
+      register: oldkey
+      until: oldkey.json.user is none
+      retries: 10
+      delay: 2
+      no_log: true
+      check_mode: false
+
+    # ── 4. The weather, Teun, the agent ─────────────────────────────────────
+    - name: Teun signs in (Keycloak)
+      ansible.builtin.uri:
+        url: "{{ vult_keycloak_url }}/realms/tidewell/protocol/openid-connect/token"
+        method: POST
+        ca_path: "{{ vult_ca }}"
+        body_format: form-urlencoded
+        body:
+          grant_type: password
+          client_id: tidewell-cli
+          username: "{{ story.clerk.user }}"
+          password: "{{ lookup('ansible.builtin.file', vult_root + '/.secrets/people/' + story.clerk.user) | trim }}"
+      register: teun
+      no_log: true
+      check_mode: false
+
+    - name: The weather cancels the {{ story.weather_cancel.departure }}
+      ansible.builtin.uri:
+        url: "{{ vult_booking_url }}/api/crossings/{{ from_crossing }}/cancel"
+        method: POST
+        ca_path: "{{ vult_ca }}"
+        headers: { Authorization: "Bearer {{ teun.json.access_token }}" }
+      register: weather
+      changed_when: weather.json.cancelled
+      no_log: true
+
+    - name: Passengers still on it
+      ansible.builtin.uri:
+        url: "{{ vult_booking_url }}/api/crossings/{{ from_crossing }}/manifest"
+        ca_path: "{{ vult_ca }}"
+        headers: { Authorization: "Bearer {{ teun.json.access_token }}" }
+      register: stranded
+      no_log: true
+      check_mode: false
+
+    - name: Teun asks the agent; it acts with his delegation
+      ansible.builtin.uri:
+        url: "{{ vult_booking_url }}/api/agent/ask"
+        method: POST
+        ca_path: "{{ vult_ca }}"
+        headers: { Authorization: "Bearer {{ teun.json.access_token }}" }
+        body_format: json
+        body:
+          crossing: "{{ from_crossing }}"
+          text: >-
+            The {{ story.weather_cancel.departure }} from {{ story.ports[0] }} on day {{ story.weather_cancel.day }} is cancelled for weather.
+            Rebook its passengers onto the {{ story.weather_cancel.rebook_to }}.
+        timeout: 90
+      register: asked
+      when: stranded.json.bookings | rejectattr('status', 'equalto', 'cancelled') | list | length > 0
+      failed_when: not asked.json.done | default(false) or not asked.json.delegated | default(false)
+      changed_when: true
+      no_log: true
+
+    # ── 5. The overreach ────────────────────────────────────────────────────
+    - name: The agent tries to cancel the crossing's bookings with the same delegation
+      ansible.builtin.uri:
+        url: "{{ vult_booking_url }}/api/agent/act"
+        method: POST
+        ca_path: "{{ vult_ca }}"
+        headers: { Authorization: "Bearer {{ teun.json.access_token }}" }
+        body_format: json
+        body: { action: cancel, from: "{{ from_crossing }}" }
+        status_code: [403]
+      register: overreach
+      changed_when: false
+      no_log: true
+
+    - name: The rebooked passengers
+      ansible.builtin.uri:
+        url: "{{ vult_booking_url }}/api/crossings/{{ to_crossing }}/manifest"
+        ca_path: "{{ vult_ca }}"
+        headers: { Authorization: "Bearer {{ teun.json.access_token }}" }
+      register: landed
+      no_log: true
+      check_mode: false
+
+    - name: The evidence (answers, never tokens)
+      ansible.builtin.copy:
+        dest: "{{ vult_root }}/.build/acts/act-5-evidence.json"
+        mode: "0600"
+        content: >-
+          {{ {'from': from_crossing, 'to': to_crossing,
+              'asked': ({'plan': asked.json.plan, 'model_ms': asked.json.model_ms, 'moved': asked.json.booking.moved, 'delegated': asked.json.delegated}
+                        if asked is not skipped else 'skipped: nobody left on ' + from_crossing),
+              'overreach': {'status': overreach.status, 'answer': overreach.json.booking.error | default(overreach.json.error | default(''))},
+              'rebooked_on_' + to_crossing: landed.json.bookings | selectattr('status', 'equalto', 'rebooked') | list | length} | to_nice_json }}
+      when: asked is not skipped

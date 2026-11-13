@@ -57,14 +57,22 @@ server {
     add_header Content-Security-Policy "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'" always;
   }
 
+  # Saskia's sign-in: Keycloak sends the code back here (D14).
+  location /auth/ {
+    set $api "http://vult-api:3000";
+    proxy_pass $api;
+    proxy_set_header Host              $host;
+    proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto https;
+  }
+
   location /api/ {
     set $api "http://vult-api:3000";
     proxy_pass $api;
     proxy_set_header Host              $host;
     proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
     proxy_set_header X-Forwarded-Proto https;
-    # Longer than the import step may run (api/lib/importer.js: 90 s).
-    proxy_read_timeout 120s;
+    proxy_read_timeout 60s;
   }
 }
 

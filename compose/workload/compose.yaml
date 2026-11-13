@@ -80,17 +80,19 @@ services:
     profiles: ["act2"]
     user: "0:0"
     network_mode: none
-    # The wave sets VULT_AGENT_ACT: tls.hcl joins agent.hcl from act 3.
+    # The wave sets VULT_AGENT_ACT: tls.hcl joins agent.hcl from act 3,
+    # proxy.hcl (the API proxy for Transit signing) from act 5.
     environment:
       AGENT_ACT: ${VULT_AGENT_ACT:-2}
     entrypoint:
       - /bin/sh
       - -c
       - >-
-        umask 077 && mkdir -p /in/config && rm -f /in/config/agent.hcl /in/config/tls.hcl &&
+        umask 077 && mkdir -p /in/config && rm -f /in/config/agent.hcl /in/config/tls.hcl /in/config/proxy.hcl &&
         cat /src/role-id >/in/role-id && cat /src/wrapped-secret-id >/in/wrapped-secret-id &&
         cp /cfg/agent.hcl /in/config/ &&
         if [ "$$AGENT_ACT" -ge 3 ]; then cp /cfg/tls.hcl /in/config/; fi &&
+        if [ "$$AGENT_ACT" -ge 5 ]; then cp /cfg/proxy.hcl /in/config/; fi &&
         chown -R 1000:1000 /in /out && chmod -R go-rwx /in /out &&
         echo "[agent-init] done (act $$AGENT_ACT)"
     volumes:

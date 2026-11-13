@@ -72,12 +72,17 @@
             node --input-type=module -e '
               import { importConfig } from "{{ vult_root }}/api/lib/importer.js";
               const want = JSON.parse(process.argv[1]);
-              process.stdout.write(importConfig({ secrets: want, address: "https://vault-1:8200", namespace: "{{ vult_namespace }}", mount: "kv", localstackIp: "{{ vult_localstack.ip }}" }));
-            ' '{{ kv_legacy.results | selectattr("status", "equalto", 404) | map(attribute="item") | map("dict2items") | map("selectattr", "key", "in", ["aws_name", "kv_name"]) | map("items2dict") | list | to_json }}' >"{{ vult_root }}/.build/import/import.hcl"
+              process.stdout.write(importConfig({ secrets: want, address: "https://vault-1:8200",
+                namespace: "{{ vult_namespace }}", mount: "kv", localstackIp: "{{ vult_localstack.ip }}" }));
+            ' "$WANT" >"{{ vult_root }}/.build/import/import.hcl"
           args: { executable: /bin/bash }
+          environment:
+            WANT: >-
+              {{ kv_legacy.results | selectattr("status", "equalto", 404) | map(attribute="item") | map("dict2items")
+                 | map("selectattr", "key", "in", ["aws_name", "kv_name"]) | map("items2dict") | list | to_json }}
           changed_when: false
 
-        - name: vault operator import apply (the Enterprise CLI in a throwaway Vault container; the token on stdin)
+        - name: Vault operator import apply (the Enterprise CLI in a throwaway Vault container; the token on stdin)
           ansible.builtin.shell: |
             set -euo pipefail
             podman run --rm -i --name vult-import --network vult-internal \

@@ -99,6 +99,11 @@ services:
       KC_HTTPS_PORT: "8443"
       KC_HTTPS_CERTIFICATE_FILE: /tls/vault.crt
       KC_HTTPS_CERTIFICATE_KEY_FILE: /tls/vault.key
+      # Act 4: the booking client may authenticate with a certificate from
+      # Vault PKI (client-x509, mutual TLS) instead of a client secret.
+      # "request" asks for a certificate and never requires one.
+      KC_HTTPS_CLIENT_AUTH: request
+      KC_TRUSTSTORE_PATHS: /tls/ca-chain.pem
       KC_HEALTH_ENABLED: "true"
     cap_drop: [ALL]
     cap_add: [NET_BIND_SERVICE]

@@ -1,0 +1,249 @@
+# act-6 (ansible, make act-6): the revocation drill (reframed 2026-11-13: no
+# note holds a credential). Everything Saskia does, she does with her own
+# Vault token (D14: Keycloak, then Vault's jwt login), so the audit log names
+# her.
+#
+#   1. the app's current lease is the one to kill (its health names it)
+#   2. Saskia revokes that one lease; the revocation statements end its
+#      PostgreSQL sessions; the drill measures until they are gone
+#   3. Vault Agent logs in again with a fresh secret zero (D16's repair:
+#      SIGHUP only reloads Agent's configuration, measured) and renders a new
+#      lease; a booking proves the app works on it
+#   4. Saskia rotates the CI deploy token once; Sync carries it to GitHub and
+#      LocalStack, Agent to the app; the old value is dead everywhere
+#   5. the records (Vault's audit log, PostgreSQL's connection log, GitHub's
+#      and LocalStack's own times) into .build/act6/raw.json, then the
+#      timeline, the evidence panel and the cited summary (make timeline)
+# Runs once: a second run finds the drill's evidence and stops
+# (VULT_DRILL_AGAIN=1 drills again).
+- name: Act 6, the revocation drill
+  hosts: localhost
+  gather_facts: false
+  vars:
+    v_ns: "{{ vult_cluster_addr }}/v1/{{ vult_namespace }}"
+    v_token: "{{ lookup('ansible.builtin.file', vult_tokens_dir + '/ansible-platform') }}"
+    story: "{{ lookup('ansible.builtin.file', vult_root + '/config/story.json') | from_json }}"
+    ev: "{{ vult_root }}/.build/act6"
+    psql: podman exec -i vult-postgres gosu postgres psql -At -d tidewell
+  tasks:
+    - name: Drilled already?
+      ansible.builtin.stat:
+        path: "{{ ev }}/drill.json"
+      register: drilled
+
+    - name: The drill ran; its evidence stands
+      ansible.builtin.meta: end_play
+      when: drilled.stat.exists and lookup('ansible.builtin.env', 'VULT_DRILL_AGAIN') != '1'
+
+    - name: Where the evidence goes
+      ansible.builtin.file:
+        path: "{{ ev }}"
+        state: directory
+        mode: "0700"
+
+    - name: The drill starts
+      ansible.builtin.set_fact:
+        started_at: "{{ now(utc=true).strftime('%Y-%m-%dT%H:%M:%SZ') }}"
+
+    # ── Saskia signs in (Keycloak, then Vault) ──────────────────────────────
+    - name: Saskia signs in to Keycloak
+      ansible.builtin.uri:
+        url: "{{ vult_keycloak_url }}/realms/tidewell/protocol/openid-connect/token"
+        method: POST
+        ca_path: "{{ vult_ca }}"
+        body_format: form-urlencoded
+        body:
+          grant_type: password
+          client_id: tidewell-cli
+          username: "{{ story.presenter.user }}"
+          password: "{{ lookup('ansible.builtin.file', vult_root + '/.secrets/people/' + story.presenter.user) | trim }}"
+      register: kc
+      no_log: true
+
+    - name: Saskia's own Vault token (jwt login, group platform)
+      ansible.builtin.uri:
+        url: "{{ v_ns }}/auth/jwt/login"
+        method: POST
+        ca_path: "{{ vult_ca }}"
+        body_format: json
+        body: { role: person, jwt: "{{ kc.json.access_token }}" }
+      register: saskia
+      no_log: true
+
+    # ── 1. The lease to kill ────────────────────────────────────────────────
+    - name: The app's current lease
+      ansible.builtin.uri:
+        url: "{{ vult_booking_url }}/healthz"
+        ca_path: "{{ vult_ca }}"
+      register: before
+      failed_when: before.json.credential != 'vault-agent' or not before.json.lease
+
+    - name: Its PostgreSQL user (the username only)
+      ansible.builtin.command:
+        argv: [podman, exec, vult-booking, node, -e, "process.stdout.write(JSON.parse(require('fs').readFileSync('/vault/out/db.json','utf8')).username)"]
+      register: user
+      changed_when: false
+
+    - name: Its open sessions
+      ansible.builtin.command: "{{ psql }} -c \"select count(*) from pg_stat_activity where usename = '{{ user.stdout }}'\""
+      register: sessions_before
+      changed_when: false
+
+    # ── 2. Saskia revokes that one lease ────────────────────────────────────
+    - name: The lease is declared leaked
+      ansible.builtin.set_fact:
+        declared_at: "{{ now(utc=true).strftime('%Y-%m-%dT%H:%M:%S.%fZ') }}"
+
+    - name: Saskia looks it up
+      ansible.builtin.uri:
+        url: "{{ v_ns }}/sys/leases/lookup"
+        method: POST
+        ca_path: "{{ vult_ca }}"
+        headers: { X-Vault-Token: "{{ saskia.json.auth.client_token }}" }
+        body_format: json
+        body: { lease_id: "{{ before.json.lease }}" }
+      register: lease_info
+
+    - name: Saskia revokes it
+      ansible.builtin.uri:
+        url: "{{ v_ns }}/sys/leases/revoke/{{ before.json.lease }}"
+        method: PUT
+        ca_path: "{{ vult_ca }}"
+        headers: { X-Vault-Token: "{{ saskia.json.auth.client_token }}" }
+        status_code: [204]
+      changed_when: true
+
+    - name: Revoked
+      ansible.builtin.set_fact:
+        revoked_at: "{{ now(utc=true).strftime('%Y-%m-%dT%H:%M:%S.%fZ') }}"
+
+    - name: Its sessions are gone
+      ansible.builtin.command: "{{ psql }} -c \"select count(*) from pg_stat_activity where usename = '{{ user.stdout }}'\""
+      register: sessions_after
+      until: sessions_after.stdout == '0'
+      retries: 30
+      delay: 1
+      changed_when: false
+
+    - name: Session gone
+      ansible.builtin.set_fact:
+        session_gone_at: "{{ now(utc=true).strftime('%Y-%m-%dT%H:%M:%S.%fZ') }}"
+
+    # ── 3. Agent logs in again; bookings work on a new lease ────────────────
+    - name: Vault Agent logs in again (a fresh single-use secret id)
+      ansible.builtin.include_role:
+        name: booking_agent
+      vars:
+        booking_agent_ns: "{{ v_ns }}"
+        booking_agent_token: "{{ v_token }}"
+        booking_agent_act: 6
+
+    - name: The app runs on a new lease
+      ansible.builtin.uri:
+        url: "{{ vult_booking_url }}/healthz"
+        ca_path: "{{ vult_ca }}"
+      register: after
+      until: after.json.database == 'up' and after.json.lease and after.json.lease != before.json.lease
+      retries: 20
+      delay: 1
+
+    - name: A booking on the new lease
+      ansible.builtin.uri:
+        url: "{{ vult_booking_url }}/api/bookings"
+        method: POST
+        ca_path: "{{ vult_ca }}"
+        body_format: json
+        body:
+          name: Ilse Marrow
+          crossing: "d{{ story.weather_cancel.day }}-{{ story.weather_cancel.rebook_to | replace(':', '') }}"
+        status_code: [200, 201, 409]
+      register: booking
+
+    - name: Bookings back
+      ansible.builtin.set_fact:
+        bookings_back_at: "{{ now(utc=true).strftime('%Y-%m-%dT%H:%M:%S.%fZ') }}"
+
+    - name: The new lease's PostgreSQL user
+      ansible.builtin.command:
+        argv: [podman, exec, vult-booking, node, -e, "process.stdout.write(JSON.parse(require('fs').readFileSync('/vault/out/db.json','utf8')).username)"]
+      register: new_user
+      changed_when: false
+
+    # ── 4. Saskia rotates the deploy token ──────────────────────────────────
+    - name: Saskia writes a new deploy token (generated here, never printed)
+      ansible.builtin.uri:
+        url: "{{ v_ns }}/kv/data/{{ story.deploy.kv_name }}"
+        method: POST
+        ca_path: "{{ vult_ca }}"
+        headers: { X-Vault-Token: "{{ saskia.json.auth.client_token }}" }
+        body_format: json
+        body: { data: { value: "{{ lookup('ansible.builtin.password', '/dev/null', length=40, chars=['ascii_letters', 'digits']) }}" } }
+      register: rotated
+      changed_when: true
+      no_log: true
+
+    - name: Rotated
+      ansible.builtin.set_fact:
+        rotated_at: "{{ now(utc=true).strftime('%Y-%m-%dT%H:%M:%S.%fZ') }}"
+
+    - name: Sync has carried it to both destinations
+      ansible.builtin.uri:
+        url: "{{ v_ns }}/sys/sync/destinations/{{ item }}/associations"
+        ca_path: "{{ vult_ca }}"
+        headers: { X-Vault-Token: "{{ saskia.json.auth.client_token }}" }
+      loop: [gh/tidewell-github, aws-sm/tidewell-localstack]
+      register: synced
+      until: >-
+        (synced.json.data.associated_secrets.values() | selectattr('secret_name', 'equalto', story.deploy.kv_name)
+         | selectattr('sync_status', 'equalto', 'SYNCED') | selectattr('updated_at', '>', started_at) | list | length) == 1
+      retries: 30
+      delay: 2
+
+    - name: The app's deploy check takes only the new value (the old one is refused)
+      ansible.builtin.uri:
+        url: "{{ vult_booking_url }}/api/deploy/check"
+        method: POST
+        ca_path: "{{ vult_ca }}"
+        headers: { X-Deploy-Token: "{{ lookup('ansible.builtin.file', vult_root + '/.secrets/workload/deploy-token') }}" }
+        status_code: [204, 401]
+      register: oldtoken
+      until: oldtoken.status == 401
+      retries: 20
+      delay: 2
+      no_log: true
+
+    - name: Saskia's token is done
+      ansible.builtin.uri:
+        url: "{{ v_ns }}/auth/token/revoke-self"
+        method: POST
+        ca_path: "{{ vult_ca }}"
+        headers: { X-Vault-Token: "{{ saskia.json.auth.client_token }}" }
+        status_code: [204]
+      changed_when: true
+      no_log: true
+
+    # ── 5. The records, the timeline ────────────────────────────────────────
+    - name: The drill's facts (times, ids; never a value)
+      ansible.builtin.copy:
+        dest: "{{ ev }}/drill.json"
+        mode: "0600"
+        content: >-
+          {{ {'started_at': started_at, 'declared_at': declared_at, 'revoked_lease': before.json.lease,
+              'lease_ttl_left': lease_info.json.data.ttl, 'revoked_user': user.stdout, 'sessions_before': sessions_before.stdout | int,
+              'revoked_at': revoked_at, 'session_gone_at': session_gone_at,
+              'new_lease': after.json.lease, 'new_users': [new_user.stdout], 'bookings_back_at': bookings_back_at,
+              'booking': booking.json, 'rotated_at': rotated_at, 'rotated_version': rotated.json.data.version,
+              'old_deploy_token': oldtoken.json.error | default('refused')} | to_nice_json }}
+
+    - name: Collect the records
+      ansible.builtin.command: "{{ vult_root }}/scripts/act6-collect.sh"
+      changed_when: true
+
+    - name: The timeline, the panel, the summary
+      ansible.builtin.command: "{{ vult_root }}/scripts/timeline.sh"
+      register: timeline
+      changed_when: true
+
+    - name: What the drill shows
+      ansible.builtin.debug:
+        msg: "{{ timeline.stdout_lines[-2:] }}"

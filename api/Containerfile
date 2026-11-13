@@ -4,15 +4,22 @@
 ARG NODE_IMAGE=docker.io/library/node:24-alpine
 ARG VAULT_ENT_IMAGE=docker.io/hashicorp/vault-enterprise:2.2.1-ent
 FROM ${NODE_IMAGE} AS node
+# pg (D18: the workload's one dependency; the witness logs in to PostgreSQL)
+# from the lockfile, never from the Mac's node_modules.
+FROM ${NODE_IMAGE} AS deps
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev --no-audit --no-fund
 FROM ${VAULT_ENT_IMAGE}
 
 COPY --from=node /usr/local/bin/node /usr/local/bin/node
 COPY --from=node /usr/lib/libstdc++.so.6 /usr/lib/libgcc_s.so.1 /usr/lib/
 ENV NODE_ENV=production VAULT_BIN=/bin/vault
 WORKDIR /app
-# No dependencies (D14): no npm install.
+COPY --from=deps /app/node_modules ./node_modules
 COPY package.json server.js ./
 COPY lib ./lib
+COPY bin ./bin
 # config/story.json without the legacy values (scripts/app-build.sh strips them).
 COPY config ./config
 

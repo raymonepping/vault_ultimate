@@ -18,11 +18,18 @@
 const ref = (run, id) => ({ run: run.at, id });
 
 export function summarise({ at, credentials, copies }) {
-  const working = credentials.filter((c) => c.works);
+  // A residual stands while any value of it works (the rotated one included).
+  const working = credentials.filter((c) => c.works || (c.residual && c.current?.works));
   // A residual (inventory.json says why) is counted in standing and listed on
   // its own; it does not set the longest lifetime, or the number could never
   // move off "never" for a credential the lab cannot remove.
-  const owned = working.filter((c) => !c.residual);
+  // What works in place of a refused credential (the lease that replaced the
+  // password, the certificate the site serves now) counts with the lifetime
+  // the witness measured for it: "never" before, minutes after.
+  const owned = [
+    ...working.filter((c) => !c.residual).map((c) => ({ id: c.id, lifetime: c.lifetime })),
+    ...credentials.filter((c) => !c.works && !c.residual && c.replaced_by?.lifetime).map((c) => ({ id: c.id, lifetime: c.replaced_by.lifetime, replacement: true })),
+  ];
   const never = owned.find((c) => c.lifetime?.never);
   let longest;
   if (never) longest = { never: true, id: never.id };
@@ -30,10 +37,14 @@ export function summarise({ at, credentials, copies }) {
   else {
     const t0 = Date.parse(at || new Date().toISOString());
     const last = owned.filter((c) => c.lifetime?.until).sort((a, b) => Date.parse(b.lifetime.until) - Date.parse(a.lifetime.until))[0];
-    longest = last ? { seconds: Math.max(0, Math.round((Date.parse(last.lifetime.until) - t0) / 1000)), until: last.lifetime.until, id: last.id } : { seconds: null, id: null };
+    longest = last
+      ? { seconds: Math.max(0, Math.round((Date.parse(last.lifetime.until) - t0) / 1000)), until: last.lifetime.until, id: last.id, ...(last.replacement ? { replacement: true, source: last.lifetime.source } : {}) }
+      : { seconds: null, id: null };
   }
   return {
     standing: working.length,
+    // Targets that did not answer: neither standing nor gone (prompt 08).
+    unknown: credentials.filter((c) => c.works === null).map((c) => c.id),
     unmanaged: copies.filter((c) => c.unmanaged).length,
     longest,
     residual: working.filter((c) => c.residual).map((c) => c.id),

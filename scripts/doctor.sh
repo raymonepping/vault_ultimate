@@ -31,10 +31,13 @@ fi
 # disk is plenty). On macOS / is the sealed system volume; $HOME's is the data.
 avail=$(df -g "$HOME" | awk 'NR==2 {print $4}')
 [ "${avail:-0}" -ge 10 ] && fine "Mac disk: ${avail} GiB free" || fix "Mac disk: ${avail:-?} GiB free (under 10 GiB; a full disk corrupts writes in the VM)" "free space on the Mac (ask before any podman prune)"
-for img in "$(vult_conf VAULT_ENT_IMAGE)" "$(vult_conf LOCALSTACK_IMAGE)" "$(vult_conf NODE_IMAGE)" "$(vult_conf NGINX_IMAGE)" "$(vult_conf ALPINE_IMAGE)"; do
+vmfree=$(podman machine ssh df -BG /var 2>/dev/null | awk 'NR==2 {gsub("G", "", $4); print $4}')
+[ "${vmfree:-0}" -ge 5 ] && fine "Podman VM disk: ${vmfree} GiB free on /var" || fix "Podman VM disk: ${vmfree:-?} GiB free on /var" "make disk-check (reclaiming is the operator's call)"
+[ -s "$VULT_STATE/vault.hclic" ] && fine "the Vault licence is installed (.secrets/vault/vault.hclic)" || fix "no Vault licence installed" "VAULT_LICENSE in .env, then make license"
+for img in "$(vult_conf VAULT_ENT_IMAGE)" "$(vult_conf LOCALSTACK_IMAGE)" "$(vult_conf NODE_IMAGE)" "$(vult_conf NGINX_IMAGE)" "$(vult_conf ALPINE_IMAGE)" "$(vult_conf KEYCLOAK_IMAGE)" "$(vult_conf OPENLDAP_IMAGE)" "$(vult_conf POSTGRES_IMAGE)" "$(vult_conf OLLAMA_IMAGE)"; do
   podman image exists "$img" || fix "image $img is missing" "make lab (compose pulls what is missing)"
 done
-for t in api web; do
+for t in api web booking tide-agent; do
   podman image exists "$(vult_conf VULT_IMAGE_PREFIX)/$t:$(vult_conf VULT_IMAGE_TAG)" || fix "image $t is not built" "make app-build"
 done
 busy=$("$VULT_ROOT/scripts/ports-check.sh" 2>/dev/null | grep -vE ' free$|\(this stack\)' | awk '{print $1}' | paste -sd' ' - || true)
@@ -105,23 +108,38 @@ if running vult-localstack; then
     -H 'X-Amz-Target: secretsmanager.ListSecrets' -H 'Content-Type: application/x-amz-json-1.1' \
     -H "Authorization: AWS4-HMAC-SHA256 Credential=test/20260101/$(vult_conf VULT_AWS_REGION)/secretsmanager/aws4_request, SignedHeaders=host, Signature=0" \
     --data '{"MaxResults":100}' | jq --argjson want "$(jq '[.legacy[].aws_name]' config/story.json)" '[.SecretList[]?.Name] as $have | [$want[] | select(. as $n | $have | index($n))] | length')
-  [ "${n:-0}" -ge "$(jq '.legacy | length' config/story.json)" ] && fine "the legacy store holds its $n secrets" || fix "the legacy store holds ${n:-0} secrets" "make seed"
+  # Act 1 brings the legacy secrets home and retires the originals on purpose.
+  want=$([ "$(cat "$BUILD_DIR/act" 2>/dev/null || echo 0)" = 0 ] && jq '.legacy | length' config/story.json || echo 0)
+  [ "${n:-0}" = "$want" ] && fine "the legacy store holds $n secrets (act $(cat "$BUILD_DIR/act" 2>/dev/null || echo 0) expects $want)" || fix "the legacy store holds ${n:-0} secrets, act $(cat "$BUILD_DIR/act" 2>/dev/null || echo 0) expects $want" "make up (LocalStack keeps nothing across a restart)"
 else
   fix "vult-localstack is not running" "make up"
 fi
 
 echo "credentials"
-[ -s .secrets/people/saskia ] || fix "no password for saskia" "make people"
+for who in saskia teun; do [ -s ".secrets/people/$who" ] || fix "no password for $who" "make identity-up"; done
+if out=$("$VULT_ROOT/scripts/github-installation.sh" 2>&1); then fine "the GitHub App is installed on $(vult_conf VULT_GITHUB_OWNER)/$(vult_conf VULT_GITHUB_REPO)"; else fix "the GitHub App installation: $(tail -1 <<<"$out")" "install VaultSyncDemo on the repository (GitHub settings; the lab never changes an app)"; fi
 compgen -G ".secrets/github/*.pem" >/dev/null && fine "the GitHub App key is in .secrets/github/" ||
   fix "no GitHub App key (a rebuild cannot register the app)" "generate a private key for VaultSyncDemo in GitHub, put it in .secrets/github/"
 gh auth status >/dev/null 2>&1 && fine "gh CLI signed in (make github-evidence)" || fix "the gh CLI is not signed in" "gh auth login"
 
+echo "stacks"
+for c in vult-openldap vult-keycloak vult-postgres vult-ollama vult-booking vult-tide_agent; do
+  if running "$c"; then
+    [ "$(podman inspect -f '{{.State.Health.Status}}' "$c" 2>/dev/null)" = healthy ] && fine "$c healthy" || fix "$c is not healthy" "podman logs $c, then make wake-up"
+  else fix "$c is not running" "make up"; fi
+done
+if [ "$(cat "$BUILD_DIR/act" 2>/dev/null || echo 0)" -ge 2 ]; then
+  running vult-booking_agent && [ "$(podman inspect -f '{{.State.Health.Status}}' vult-booking_agent 2>/dev/null)" = healthy ] && fine "Vault Agent healthy (act 2 on)" || fix "the booking app's Vault Agent is not healthy" "make wake-up (a fresh secret id: make agent)"
+fi
+running vult-ollama && { podman exec vult-ollama ollama list 2>/dev/null | grep -q "^$(vult_conf VULT_OLLAMA_MODEL)" && fine "Ollama has $(vult_conf VULT_OLLAMA_MODEL)" || fix "Ollama lacks $(vult_conf VULT_OLLAMA_MODEL)" "make models"; }
+
 echo "app"
 for c in vult-api vult-web; do running "$c" || fix "$c is not running" "make up"; done
+curl -sf "http://127.0.0.1:$(vult_conf VULT_RUNNER_PORT)/healthz" >/dev/null && fine "the host runner answers" || fix "the host runner is not running (the console cannot run an act)" "make app-up"
 if running vult-api; then
   curl -sf --cacert vault-tls/ca-chain.pem "https://localhost:$(vult_conf VULT_PORT_WEB)/api/healthz" >/dev/null && fine "the API answers" || fix "the API does not answer" "make app-logs"
 fi
-podman ps -a --filter name='^vult-.*_init$' --format '{{.Names}}' | grep . >/dev/null && fix "a one-shot init container was left behind" "make up"
+podman ps -a --filter name='^vult-' --format '{{.Names}}' | grep -E '_(init|bootstrap)$' >/dev/null && fix "a one-shot init or bootstrap container was left behind" "make up"
 
 echo "drift"
 if [ "$up" -gt 0 ]; then
