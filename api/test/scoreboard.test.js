@@ -130,3 +130,10 @@ test('a target that did not answer is unknown: not standing, not gone, listed', 
   assert.equal(s.standing, 5);
   assert.deepEqual(s.unknown, ['keycloak-ldap-bind']);
 });
+
+test('the standing number and its evidence agree after a rotation (the residual by its current value)', () => {
+  const run = { ...after, credentials: after.credentials.map((c) => (c.residual ? { ...c, works: false, current: { works: true, fingerprint: 'abcd1234' } } : c)) };
+  const b = scoreboard([run]);
+  assert.equal(b.standing.value, b.standing.evidence.length);
+  assert.ok(b.standing.evidence.some((e) => e.id === 'ci-deploy-token'));
+});

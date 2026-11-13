@@ -695,3 +695,68 @@ screen of what it fixed).
   the reset accepts exactly that refusal as "no association".
 - A failed reset that had truncated the booking tables showed up next as a
   non-idempotent `before-estate`: fix the cause, not the gate.
+
+## Prompt 99, round 1 (2026-11-13)
+
+Committed first as `3e4ca7e`. Reviews: `/ponytail:ponytail-audit` (whole
+repo), `/ponytail:ponytail-review` (the commit and the round's fixes),
+`/backend-design:audit` (`api/`, `workload/`),
+`/backend-design:security-discipline` (`api/`, `workload/`, `scripts/`,
+`compose/`, `terraform/`, `vault/`, `ansible/`).
+
+### Findings and fixes
+
+1. The agent stopped working 5 minutes after a clerk signed in on the
+   booking page (the delegation took the ID token's 300 s as the session):
+   it takes the session's own bound now.
+2. After act 6 the scoreboard showed "1 standing" with no evidence row: one
+   `stands()` rule for the number and its evidence; the evidence row shows
+   the residual's current value.
+3. The docs promised derived expiry rows the drill never makes: the evidence
+   model says only recorded leases get one (today, the revoked one).
+4. Dead API helpers (`runImport`, `cleanOutput`, `importFailed`, `said()`,
+   LocalStack's `fingerprint()` and `health()`) and their tests deleted.
+5. The API image carried a 530 MB Vault binary it never ran: built on
+   `node:24-alpine` (702 MB to 170 MB).
+6. vault_sync's leftovers deleted: playbooks `people`, `stage`, `seed`,
+   `github-app`, `destinations`, roles `people` and `stage`, their Make
+   targets, the pending phase.
+7. The "unmanaged copy" rule was untested: `unmanaged()` with five cases.
+8. The booking app's pending sign-ins had no cap: 100, expired ones purged.
+9. `make wake-up` could exit 0 after a failed repair (`grep -q` after a pipe
+   under pipefail): a flag instead.
+10. A refused stage reset still wiped the console's events: the reset clears
+    them itself, only when it runs.
+11. Four stacks starting in parallel could race to create the network: once,
+    before them.
+12. `said.js` held one function with one caller: `scrub()` lives in
+    `events.js`.
+13. Prompt 07's "Teun asks the agent through the booking page" had no form:
+    added (staff section), and the journey signs Teun in on the booking page
+    through Keycloak (proving the mutual-TLS code flow after act 4) and asks
+    the agent with his delegation.
+14. A double click booked twice: every form sends once.
+15. Agent down showed "internal error": 502 "the agent did not answer".
+16. The booking app's Vault calls had no correlation id: `X-Correlation-Id`,
+    logged beside the action.
+17. LDAP passwords on command lines (`setup_ldap.sh` `-w`/`-s`, the OpenLDAP
+    healthcheck): files (`-y`, `-T`), and the healthcheck reads the root DSE
+    anonymously.
+18. A malformed booking cookie answered 500: no session instead.
+19. Chromium did not trust the booking site (pins match only the chain it
+    builds): the Vault PKI intermediate is pinned too.
+
+Recorded decisions, not to-dos (`docs/security-model.md`, "Accepted limits on
+the internal network"): LDAP without TLS on `vult-internal`; tide-agent
+answers anyone on `vult-internal` (the before estate's problem by design);
+the booking app's `/healthz` names its lease id (an identifier, not a
+credential).
+
+### Results
+
+- `make lint` green; unit tests: scripts 16, api 59, web 8, booking 13,
+  tide-agent 5, runner 11.
+- `make verify`: 91 passed, 0 failed (rehearsal 60/0).
+- `make test-ui`: 29 passed (axe 0), the new booking-page step included.
+- After the round: act 0, the witness at the baseline (standing 6,
+  unmanaged 6, longest never).

@@ -1,9 +1,0 @@
-# Phase 12 (ansible seed): the legacy secrets of config/story.json in
-# LocalStack's Secrets Manager, created once (synthetic values, D19).
-- name: The legacy store
-  hosts: localhost
-  gather_facts: false
-  vars:
-    seed_story: "{{ lookup('ansible.builtin.file', vult_root + '/config/story.json') | from_json }}"
-  roles:
-    - seed

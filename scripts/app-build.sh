@@ -45,7 +45,6 @@ for t in $targets; do
   podman build -q --format docker --platform linux/arm64 \
     --build-arg NODE_IMAGE="$(vult_conf NODE_IMAGE)" \
     --build-arg NGINX_IMAGE="$(vult_conf NGINX_IMAGE)" \
-    --build-arg VAULT_ENT_IMAGE="$(vult_conf VAULT_ENT_IMAGE)" \
     -t "$prefix/$t:$tag" -f "$ctx/Containerfile" "$ctx" >/dev/null
   rm -rf "$ctx"
   arch=$(podman image inspect "$prefix/$t:$tag" --format '{{.Architecture}}')

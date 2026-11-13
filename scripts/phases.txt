@@ -16,7 +16,6 @@ ansible models
 make    cloud-up
 tf      vault-platform
 ansible pki-ca
-ansible people          # pending 02
 ansible before-estate
 make    workload-up
 ansible canary

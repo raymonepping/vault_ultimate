@@ -6,7 +6,7 @@
 import path from 'node:path';
 import { test, expect, type Page } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
-import { ROOT } from '../helpers/env';
+import { ROOT, conf, personPassword } from '../helpers/env';
 import { lastOpId, runViaApi, waitOp } from '../helpers/op';
 
 const PAGES = ['scoreboard', 'acts', 'witness', 'investigation', 'proof'];
@@ -50,18 +50,48 @@ test('the act rail runs the next act only', async ({ page }) => {
   expect(status, 'an act out of order is refused').toBe(409);
 });
 
-for (const n of [1, 2, 3, 4, 5, 6]) {
+async function runAct(page: Page, n: number) {
+  await page.goto('/#/scoreboard');
+  const before = await lastOpId(page);
+  await page.getByRole('button', { name: `Run act ${n}` }).click();
+  const op = await waitOp(page, before, 540_000, `act-${n}`);
+  expect(op.action).toBe(`act-${n}`);
+  await page.reload();
+  await expect(page.locator('.vg-card', { hasText: 'The acts' }).locator('.card-sub')).toContainText(`Act ${n} of 6`);
+}
+
+for (const n of [1, 2, 3, 4, 5]) {
   test(`act ${n} from the console`, async ({ page }) => {
     test.setTimeout(600_000);
-    await page.goto('/#/scoreboard');
-    const before = await lastOpId(page);
-    await page.getByRole('button', { name: `Run act ${n}` }).click();
-    const op = await waitOp(page, before, 540_000, `act-${n}`);
-    expect(op.action).toBe(`act-${n}`);
-    await page.reload();
-    await expect(page.locator('.vg-card', { hasText: 'The acts' }).locator('.card-sub')).toContainText(`Act ${n} of 6`);
+    await runAct(page, n);
   });
 }
+
+// The booking app's own staff sign-in, after act 4: Keycloak's real form, and
+// the code exchanged over mutual TLS with the site's Vault certificate (no
+// client secret). Then Teun asks the agent from the page: with his delegation.
+test('act 5: Teun signs in on the booking page and asks the agent', async ({ browser }) => {
+  const ctx = await browser.newContext({ storageState: { cookies: [], origins: [] } });
+  const page = await ctx.newPage();
+  await page.goto(`https://localhost:${conf('VULT_PORT_BOOKING')}/`);
+  await page.getByRole('link', { name: 'Staff sign in' }).click();
+  await page.locator('#username').fill('teun');
+  await page.locator('#password').fill(personPassword('teun'));
+  await page.locator('#kc-login').click();
+  await expect(page.locator('#who')).toContainText('Signed in as teun');
+  await page.locator('#staff-crossing').selectOption('d1-1100');
+  await page.locator('#agent-text').fill('Rebook the passengers of the 11:00 on day 1 onto the 15:30 on day 1.');
+  await page.getByRole('button', { name: 'Ask the agent' }).click();
+  await expect(page.locator('#agent-result')).toContainText('With your delegation', { timeout: 120_000 });
+  const r = await new AxeBuilder({ page }).withTags(TAGS).analyze();
+  expect(summary(r), summary(r).join('\n')).toEqual([]);
+  await ctx.close();
+});
+
+test('act 6 from the console', async ({ page }) => {
+  test.setTimeout(600_000);
+  await runAct(page, 6);
+});
 
 test('act 6: only the residual stands; what works lives minutes, not for ever', async ({ page }) => {
   test.setTimeout(300_000);

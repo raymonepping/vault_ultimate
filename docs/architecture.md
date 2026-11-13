@@ -19,7 +19,7 @@ network vult-internal (10.89.28.0/24)         TLS with the lab CA everywhere it 
  ├─ cloud:    LocalStack at .50 (Secrets Manager)
  ├─ workload: booking (.70, HTTPS 14202), booking-agent (Vault Agent in
  │            booking's network namespace, from act 2), tide-agent (the AI agent)
- └─ app:      api (Node 24 on the Vault Enterprise image, not published),
+ └─ app:      api (Node 24, not published),
               web (nginx, React, TLS 1.3 on 14201; /api and /auth to the API)
 host:   runner/ (127.0.0.1:14209): make targets for the console, one at a time
         Terraform (vault-seal, vault-platform), Ansible, the witness container

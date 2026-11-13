@@ -1,20 +1,15 @@
-# The API runs Secrets Import (D12), which is a CLI in the Enterprise binary:
-# Node 24 goes onto the Vault Enterprise image (its layers are already on
-# disk) rather than a 555 MB binary onto the Node image.
+# The console API: Node 24 and its one dependency, pg (D18: the witness logs
+# in to PostgreSQL). It runs no Vault CLI: act 1's Secrets Import runs in a
+# throwaway Vault container on the host's side (ansible/act-1.yml).
 ARG NODE_IMAGE=docker.io/library/node:24-alpine
-ARG VAULT_ENT_IMAGE=docker.io/hashicorp/vault-enterprise:2.2.1-ent
-FROM ${NODE_IMAGE} AS node
-# pg (D18: the workload's one dependency; the witness logs in to PostgreSQL)
-# from the lockfile, never from the Mac's node_modules.
+# pg from the lockfile, never from the Mac's node_modules.
 FROM ${NODE_IMAGE} AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --no-audit --no-fund
-FROM ${VAULT_ENT_IMAGE}
 
-COPY --from=node /usr/local/bin/node /usr/local/bin/node
-COPY --from=node /usr/lib/libstdc++.so.6 /usr/lib/libgcc_s.so.1 /usr/lib/
-ENV NODE_ENV=production VAULT_BIN=/bin/vault
+FROM ${NODE_IMAGE}
+ENV NODE_ENV=production
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY package.json server.js ./
@@ -27,5 +22,4 @@ USER 1000:1000
 EXPOSE 3000
 HEALTHCHECK --interval=10s --timeout=4s --retries=6 --start-period=10s \
   CMD ["node", "-e", "fetch('http://127.0.0.1:3000/api/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
-ENTRYPOINT []
 CMD ["node", "server.js"]

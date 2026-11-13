@@ -2,9 +2,8 @@
 // with fetch only (D14). Synthetic credentials: LocalStack is an emulator and
 // accepts any signature for its test keys. TLS is verified against the lab CA
 // (NODE_EXTRA_CA_CERTS, D11).
-//
-// A value never leaves this module: fingerprint() reads one, hashes it in
-// memory and returns the first 8 hex of SHA-256 (D16).
+// It reads names, tags and dates only, never a value. fp() is the lab's
+// fingerprint (the first 8 hex of SHA-256), used by the witness.
 import { createHash } from "node:crypto";
 import { fetchWithTimeout } from "./vault.js";
 
@@ -54,31 +53,6 @@ export function createLocalStack({ url = LOCALSTACK_URL, region = REGION, fetche
         changed: epoch(j.LastChangedDate),
         deleted: j.DeletedDate ? epoch(j.DeletedDate) : null,
       };
-    },
-    // The fingerprint of the value, or null when there is none. json: true
-    // reads a secret-path copy ({"value": ...}) and fingerprints its value key.
-    async fingerprint(name, { json = false } = {}) {
-      const r = await call("GetSecretValue", { SecretId: name });
-      if (r.status === 400) return null;
-      if (!r.ok) throw Object.assign(new Error(`LocalStack GetSecretValue ${name}: ${r.error}`), { status: 502 });
-      let v = r.json?.SecretString ?? null;
-      if (v !== null && json) {
-        try {
-          v = JSON.parse(v).value ?? null;
-        } catch {
-          v = null;
-        }
-      }
-      return v === null ? null : fp(v);
-    },
-    async health() {
-      try {
-        const { res, text } = await fetcher(`${url}/_localstack/health`, { method: "GET" }, 4_000, "LocalStack");
-        const j = JSON.parse(text);
-        return { reachable: res.ok, secretsmanager: j.services?.secretsmanager || null, version: j.version || null };
-      } catch (e) {
-        return { reachable: false, error: e.message };
-      }
     },
   };
 }

@@ -27,12 +27,17 @@ export function Evidence({ ids, latest, now }) {
         <li key={r.id} className="evidence-row">
           <div className="evidence-row__head">
             <code className="mono">{r.id}</code>
-            {'works' in r ? <Pill kind={r.works === null ? 'pending' : r.works ? 'rejected' : 'healthy'}>{r.works === null ? 'unknown' : r.works ? 'still works' : 'refused'}</Pill> : <Pill kind={r.unmanaged ? 'rejected' : 'healthy'}>{r.unmanaged ? 'unmanaged' : 'managed or gone'}</Pill>}
+            {'works' in r ? <Pill kind={r.works === null ? 'pending' : r.works || r.current?.works ? 'rejected' : 'healthy'}>{r.works === null ? 'unknown' : r.works ? 'still works' : r.current?.works ? 'rotated, still works (residual)' : 'refused'}</Pill> : <Pill kind={r.unmanaged ? 'rejected' : 'healthy'}>{r.unmanaged ? 'unmanaged' : 'managed or gone'}</Pill>}
           </div>
           {r.tried && <p className="m-0 dim">{r.tried}</p>}
           <p className="m-0">
             <code className="said-error">{r.answer}</code>
           </p>
+          {r.current && (
+            <p className="m-0">
+              Vault&apos;s current value (<Fp v={r.current.fingerprint} />, {r.current.source}): <code className="said-error">{r.current.answer}</code>
+            </p>
+          )}
           <p className="m-0 dim">
             <Ago at={r.at} now={now} />
             {r.fingerprint ? (

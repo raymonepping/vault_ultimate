@@ -16,6 +16,7 @@ cd "$VULT_ROOT"
 t0=$(date +%s)
 skew() { echo $(($(date +%s) - $(podman machine ssh date +%s 2>/dev/null | tr -d '\r' | tail -1))); }
 fixed=()
+failed=0
 
 before=$(skew 2>/dev/null || echo 0)
 act=$(cat "$BUILD_DIR/act" 2>/dev/null || echo 0)
@@ -35,7 +36,11 @@ if jq -e 'any(.[]; .do == "clock-sync")' <<<"$actions" >/dev/null; then
 fi
 while IFS=$'\t' read -r stack service why; do
   [ -n "$stack" ] || continue
-  ./scripts/compose.sh "$stack" up -d "$service" >/dev/null 2>&1 && fixed+=("restarted $service ($why)") || fixed+=("could not restart $service ($why): podman logs vult-${service//-/_}")
+    if ./scripts/compose.sh "$stack" up -d "$service" >/dev/null 2>&1; then fixed+=("restarted $service ($why)")
+  else
+    fixed+=("could not restart $service ($why): podman logs vult-${service//-/_}")
+    failed=1
+  fi
 done < <(jq -r '.[] | select(.do == "restart") | [.stack, .service, .why] | @tsv' <<<"$actions")
 
 # Vault: wait on state, never on a fixed sleep (a restarted node unseals
@@ -57,7 +62,10 @@ done
 if jq -e 'any(.[]; .do == "agent")' <<<"$actions" >/dev/null; then
   why=$(jq -r '[.[] | select(.do == "agent")][0].why' <<<"$actions")
   if ./scripts/ansible.sh agent >"$BUILD_DIR/wake-up-agent.log" 2>&1; then fixed+=("Vault Agent logged in again with a fresh secret id ($why)")
-  else fixed+=("Vault Agent did not come back ($why): $BUILD_DIR/wake-up-agent.log"); fi
+  else
+    fixed+=("Vault Agent did not come back ($why): $BUILD_DIR/wake-up-agent.log")
+    failed=1
+  fi
 fi
 
 after=$(skew 2>/dev/null || echo "?")
@@ -68,4 +76,4 @@ else
   printf 'wake-up: %s\n' "${fixed[@]}"
   echo "wake-up: ${#fixed[@]} repair(s) in $(($(date +%s) - t0))s"
 fi
-[ "$vault_ok" = yes ] && ! printf '%s\n' "${fixed[@]:-}" | grep -q 'could not\|did not come back'
+[ "$vault_ok" = yes ] && [ "$failed" = 0 ]

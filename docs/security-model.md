@@ -70,6 +70,25 @@ from Vault PKI, over mutual TLS. Keycloak runs with
 requires one) and the lab CA as its truststore. The lab-only client
 `tidewell-cli` (password grant) exists for scripted sign-ins and tests.
 
+## Accepted limits on the internal network
+
+Recorded decisions, each with what production does instead:
+
+- **LDAP without TLS.** Keycloak's federation, Vault's LDAP secrets engine
+  and the witness bind to OpenLDAP over `ldap://openldap:389` on
+  `vult-internal`; bind passwords cross that network in clear. Only this
+  lab's containers are on it. Production uses LDAPS (or StartTLS) with the
+  directory's certificate. Passwords never appear on a command line: the
+  LDAP tools read them from files (`-y`, `-T`).
+- **tide-agent answers anyone on `vult-internal`.** Before act 5 it acts
+  with its own static key for whoever asks: that is the before estate's
+  problem the story shows. From act 5 it holds no credential and acts only
+  with the delegation token the booking app sends.
+- **The booking app's `/healthz` names its current lease id.** A lease id is
+  an identifier, not a credential: revoking needs a token with
+  `sys/leases/revoke` rights (Saskia's, scoped to this role's leases). The
+  console lists it from there so only that lease can be revoked.
+
 ## The public repository
 
 `raymonepping/vault_ultimate` is public. Every value the lab writes to GitHub

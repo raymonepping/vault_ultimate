@@ -283,7 +283,7 @@ const routes = {
     const b = await readBody(req);
     if (Object.keys(b).some((k) => k !== 'confirm')) throw new HttpError(400, 'only the confirmation');
     confirmations.take(b.confirm);
-    events.clear();
+    // The events are cleared by the reset itself (USR2), only when it runs.
     return runOnHost(s, 'stage-reset', 'stage reset to act 0');
   },
 };

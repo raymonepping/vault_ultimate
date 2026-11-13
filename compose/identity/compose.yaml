@@ -60,7 +60,9 @@ services:
       identity-init:
         condition: service_completed_successfully
     healthcheck:
-      test: ["CMD-SHELL", "ldapsearch -x -H ldap://localhost -D cn=admin,dc=tidewell,dc=lab -w \"$$(cat /run/secrets/ldap-admin-password)\" -b dc=tidewell,dc=lab -s base >/dev/null"]
+      # The server answers: an anonymous read of the root DSE (no password on
+      # a command line, where anyone listing processes would see it).
+      test: ["CMD-SHELL", "ldapsearch -x -H ldap://localhost -b '' -s base namingContexts >/dev/null"]
       interval: 10s
       timeout: 5s
       retries: 10

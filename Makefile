@@ -26,7 +26,7 @@ endef
 
 .PHONY: help check clock-sync status ps volumes network ports-check compose-config env-init license license-status license-features \
 	gen-certs certs-reissue certs-status trust-root untrust-root \
-	lab phases seal-up seal-init vault-seal seal-tokens vault-up bootstrap cloud-up cloud-down vault-platform people github-app destinations seed stage app-up validate \
+	lab phases seal-up seal-init vault-seal seal-tokens vault-up bootstrap cloud-up cloud-down vault-platform app-up validate \
 	unseal vault-down vault-status vault-stepdown vault-login seal-token-status seal-token-rotate root-regen root-revoke \
 	people-copy-password tf-plan-all boundary idempotency drift secret-scan \
 	story-check github-evidence github-installation github-forget-key stage-reset probe rehearsal show-ready \
@@ -172,25 +172,10 @@ vault-platform: ## (changes state) Phase 8, tf: audit, namespace tidewell, KV v2
 pki-ca: ## (changes state) Phase, ansible: Vault generates the issuing CA's key, the lab CA signs it on the host
 	$(call run,ansible.sh pki-ca)
 
-canary: ## (changes state) Phase, ansible: act 0's leak: Teun signs in and pastes the connection string into a support note
+canary: ## (changes state) Phase, ansible: act 0's note: Teun signs in and says the app still runs on the old password (no credential in it)
 	$(call run,ansible.sh canary)
 
-people: ## (changes state) Phase 9, ansible: the presenter's login and the console token
-	$(call run,ansible.sh people)
-
-github-app: ## (changes state) Phase 10, ansible: register the VaultSyncDemo GitHub App in Vault and the GitHub destination
-	$(call run,ansible.sh github-app)
-
-destinations: ## (changes state) Phase 11, ansible: the AWS Secrets Manager destination (LocalStack)
-	$(call run,ansible.sh destinations)
-
-seed: ## (changes state) Phase 12, ansible: the legacy secrets in LocalStack (synthetic, created once)
-	$(call run,ansible.sh seed)
-
-stage: ## (changes state) Phase 13, ansible: the story's starting point
-	$(call run,ansible.sh stage)
-
-app-up: ## (changes state) Phase 14, make: api and web (builds if missing)
+app-up: ## (changes state) Phase, make: the host runner, api and web (builds if missing)
 	$(call run,app-up.sh)
 
 validate: ## Phase 15, ansible: the presenter signs in, the destinations answer, the stage is in place

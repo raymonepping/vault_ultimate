@@ -8,7 +8,8 @@
 #   pg       PostgreSQL's connection log for the app's dynamic users
 #   targets  GitHub's update time for the deploy token (gh, through
 #            make github-evidence) and LocalStack's LastChangedDate
-#   leases   the revoked lease (and when it ended)
+#   leases   the revoked lease (and when it ended); only leases recorded here
+#            can get a derived expiry row (docs/evidence-model.md)
 # Read-only; nothing here prints a value.
 set -euo pipefail
 # shellcheck source=scripts/common.sh

@@ -5,8 +5,23 @@ const el = (tag, text) => Object.assign(document.createElement(tag), { textConte
 async function api(path, opts = {}) {
   const r = await fetch(path, { ...opts, headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) } });
   const body = r.status === 204 ? {} : await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`);
+  if (!r.ok) throw new Error(body.error || body.booking?.error || `HTTP ${r.status}`);
   return body;
+}
+// A form sends once: its submit button stays disabled until the answer is in
+// (a double click booked twice).
+function once(form, fn) {
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    const button = form.querySelector('button[type="submit"]');
+    if (button.disabled) return;
+    button.disabled = true;
+    try {
+      await fn();
+    } finally {
+      button.disabled = false;
+    }
+  };
 }
 let me = { user: null };
 async function load() {
@@ -43,14 +58,13 @@ async function loadNotes() {
   const { notes } = await api('/api/notes');
   $('#notes').replaceChildren(...notes.map((n) => el('li', `${n.author}, ${new Date(n.created_at).toLocaleString()}: ${n.body}`)));
 }
-$('#book').onsubmit = async (e) => {
-  e.preventDefault();
+once($('#book'), async () => {
   try {
     const r = await api('/api/bookings', { method: 'POST', body: JSON.stringify({ crossing: $('#book-crossing').value, name: $('#book-name').value }) });
     $('#book-result').textContent = `Booked: booking ${r.booking}.`;
     load();
   } catch (err) { $('#book-result').textContent = err.message; }
-};
+});
 $('#manifest-show').onclick = async () => {
   try {
     const { bookings } = await api(`/api/crossings/${$('#staff-crossing').value}/manifest`);
@@ -66,9 +80,19 @@ $('#crossing-cancel').onclick = async () => {
     load();
   } catch (err) { $('#staff-result').textContent = err.message; }
 };
-$('#note').onsubmit = async (e) => {
-  e.preventDefault();
+once($('#note'), async () => {
   try { await api('/api/notes', { method: 'POST', body: JSON.stringify({ body: $('#note-body').value }) }); $('#note-body').value = ''; loadNotes(); }
   catch (err) { $('#staff-result').textContent = err.message; }
-};
+});
+// From act 5 the app hands the agent a delegation for this crossing's rebook;
+// before it, the agent acts with its own static key (the before estate).
+once($('#agent'), async () => {
+  $('#agent-result').textContent = 'Asking the agent…';
+  try {
+    const r = await api('/api/agent/ask', { method: 'POST', body: JSON.stringify({ crossing: $('#staff-crossing').value, text: $('#agent-text').value }) });
+    const p = r.plan || {};
+    $('#agent-result').textContent = `${r.delegated ? 'With your delegation' : 'With its own static key'}: ${p.action}${p.from ? ` ${p.from}` : ''}${p.to ? ` to ${p.to}` : ''}; ${r.booking?.moved ?? 0} passenger(s) moved.`;
+    load();
+  } catch (err) { $('#agent-result').textContent = err.message; }
+});
 load().catch((err) => { $('#who').textContent = err.message; });

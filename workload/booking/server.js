@@ -97,7 +97,12 @@ async function readJson(req, limit = 16 * 1024) {
 
 function cookie(req, name) {
   const m = (req.headers.cookie || '').split(';').map((s) => s.trim()).find((s) => s.startsWith(`${name}=`));
-  return m ? decodeURIComponent(m.slice(name.length + 1)) : null;
+  if (!m) return null;
+  try {
+    return decodeURIComponent(m.slice(name.length + 1));
+  } catch {
+    return null; // a malformed cookie is no session, not a 500
+  }
 }
 const b64u = (buf) => buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 
@@ -108,7 +113,9 @@ async function who(req) {
     const s = sessions.get(sid);
     if (Date.now() < s.idleUntil && Date.now() / 1000 < s.exp + 3600) {
       s.idleUntil = Date.now() + SESSION_IDLE;
-      return { kind: 'staff', user: s.user, groups: s.groups, via: 'session', session: s, exp: s.exp };
+      // exp: the bound this session is kept to (the ID token lives 300 s; the
+      // session an hour past it), so a delegation never outlives it.
+      return { kind: 'staff', user: s.user, groups: s.groups, via: 'session', session: s, exp: s.exp + 3600 };
     }
     sessions.delete(sid);
   }
@@ -143,6 +150,8 @@ function sameOrigin(req) {
 
 // ── OIDC code flow with PKCE (client tidewell-booking) ───────────────────────
 function login(res) {
+  for (const [k, v] of pending) if (Date.now() > v.until) pending.delete(k);
+  if (pending.size >= 100) return fail(res, 429, 'too many sign-ins in progress; try again in a few minutes');
   const state = b64u(randomBytes(16));
   const verifier = b64u(randomBytes(32));
   const nonce = b64u(randomBytes(16));
@@ -336,9 +345,10 @@ async function route(req, res, url) {
 async function permit(p, action, crossing) {
   if (p.via === 'static-key') return true;
   if (p.via !== 'delegation' || !delegation) return false;
-  const r = await delegation.authorize(p, action, crossing);
+  const cid = randomUUID();
+  const r = await delegation.authorize(p, action, crossing, cid);
   p.answer = r.answer;
-  log({ msg: 'delegated action', action, crossing, for: p.subject, jti: p.jti, vault: r.answer });
+  log({ msg: 'delegated action', action, crossing, for: p.subject, jti: p.jti, vault: r.answer, correlation_id: cid });
   return r.ok;
 }
 
@@ -352,12 +362,19 @@ async function askAgent(req, res, who_, path) {
   const headers = { 'Content-Type': 'application/json' };
   if (!creds.agentKey) {
     if (!delegation) return fail(res, 503, 'no delegation available');
-    headers.Authorization = `Bearer ${await delegation.issue({ user: who_.user, exp: who_.exp }, 'rebook', crossing)}`;
+    const cid = randomUUID();
+    headers.Authorization = `Bearer ${await delegation.issue({ user: who_.user, exp: who_.exp }, 'rebook', crossing, cid)}`;
+    log({ msg: 'delegation signed', for: who_.user, crossing, correlation_id: cid });
   }
   const ac = new AbortController();
   const t = setTimeout(() => ac.abort(), 60000);
   try {
-    const r = await fetch(`${TIDE_AGENT}${path}`, { method: 'POST', headers, signal: ac.signal, body: JSON.stringify(path === '/ask' ? { text: String(b.text || '').slice(0, 500) } : { action: b.action, from: b.from, to: b.to }) });
+    let r;
+    try {
+      r = await fetch(`${TIDE_AGENT}${path}`, { method: 'POST', headers, signal: ac.signal, body: JSON.stringify(path === '/ask' ? { text: String(b.text || '').slice(0, 500) } : { action: b.action, from: b.from, to: b.to }) });
+    } catch (e) {
+      return fail(res, 502, `the agent did not answer: ${ac.signal.aborted ? 'no answer within 60 s' : e.cause?.code || e.message}`);
+    }
     const out = await r.json().catch(() => ({}));
     log({ msg: 'asked the agent', by: who_.user, path, status: r.status, via: headers.Authorization ? 'delegation' : 'static-key' });
     return send(res, r.status, { ...out, delegated: !!headers.Authorization });

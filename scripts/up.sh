@@ -48,6 +48,7 @@ step vault "$([ "$before" = running ] && echo 'kept: ')$(tail -1 "$BUILD_DIR/up-
 
 # identity, data, ai and cloud need Vault, not each other: in parallel
 # (indexed arrays: macOS's bash 3.2 has no associative ones).
+./scripts/network.sh # once: four parallel "create if missing" would race
 stacks=(identity data ai cloud)
 ctrs=(vult-keycloak vult-postgres vult-ollama vult-localstack)
 pids=()

@@ -17,9 +17,13 @@
 
 const ref = (run, id) => ({ run: run.at, id });
 
+// One rule for "stands", used for the number and for its evidence rows: a
+// credential that works, or a residual while any value of it works (the
+// rotated one included).
+export const stands = (c) => c.works === true || (c.residual === true && c.current?.works === true);
+
 export function summarise({ at, credentials, copies }) {
-  // A residual stands while any value of it works (the rotated one included).
-  const working = credentials.filter((c) => c.works || (c.residual && c.current?.works));
+  const working = credentials.filter(stands);
   // A residual (inventory.json says why) is counted in standing and listed on
   // its own; it does not set the longest lifetime, or the number could never
   // move off "never" for a credential the lab cannot remove.
@@ -83,7 +87,7 @@ export function scoreboard(history, canaries = []) {
   return {
     at: last.at,
     act: last.act,
-    standing: { value: s.standing, evidence: last.credentials.filter((c) => c.works).map((c) => ref(last, c.id)) },
+    standing: { value: s.standing, evidence: last.credentials.filter(stands).map((c) => ref(last, c.id)) },
     longest: { value: s.longest.never ? 'never' : s.longest.seconds, ...s.longest, evidence: s.longest.id ? [ref(last, s.longest.id)] : [] },
     unmanaged: { value: s.unmanaged, evidence: last.copies.filter((c) => c.unmanaged).map((c) => ref(last, c.id)) },
     leak_windows: canaries.map((c) => leakWindow(runs, c)),

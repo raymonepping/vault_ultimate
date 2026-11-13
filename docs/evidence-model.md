@@ -69,8 +69,11 @@ update time for the deploy token and LocalStack's `LastChangedDate`.
 - the targets' own update times.
 
 **Derived rows.** Vault writes no audit entry when a lease expires. An
-expiry row is made only for a lease that ended without a revoke, at its own
-expire time, never in the future, and it says "derived".
+expiry row is made only for a lease the collector records as ended without a
+revoke, at its own expire time, never in the future, and it says "derived"
+(`derivedExpiries`, unit-tested). Today the collector records one lease, the
+one Saskia revoked, so a drill shows no derived row: nothing is invented to
+fill the gap.
 
 **Systems changed by hand.** A change seen at a target counts as by hand
 unless a Vault request that changed something came in the minute before it.

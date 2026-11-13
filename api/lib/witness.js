@@ -208,6 +208,11 @@ async function secretZero(c) {
 }
 
 // ── Copies: managed when a Sync association keeps them current ──────────────
+// A copy is unmanaged while it exists, Vault does not keep it current, and
+// what it holds still works or is unknown (an unreachable target is no proof
+// the copy is harmless). A legacy value is not tried: it counts while it exists.
+export const unmanaged = (exists, managed, holdsWorks) => Boolean(exists) && !managed && holdsWorks !== false;
+
 async function associations(c, dest) {
   const r = await call(c.token, 'GET', ns(`sys/sync/destinations/${dest}/associations`)).catch(() => ({ ok: false }));
   return r.ok ? Object.values(r.json?.data?.associated_secrets || {}) : [];
@@ -239,10 +244,7 @@ async function copies(c, inventory, story, byId) {
       // Unreachable is not "gone": the copy counts until LocalStack says so.
       Object.assign(row, { exists: has || !!d?.error, managed: !!a, answer: `${where}${a ? `; Vault syncs it (${a.sync_status}, ${a.updated_at})` : ''}` });
     }
-    // A copy is unmanaged while it exists, Vault does not keep it current,
-    // and what it holds still works (a legacy value is not tried: it counts
-    // while it exists).
-    row.unmanaged = row.exists && !row.managed && (holds ? holds.works !== false : true);
+    row.unmanaged = unmanaged(row.exists, row.managed, holds ? holds.works : true);
     out.push(row);
   }
   return out;

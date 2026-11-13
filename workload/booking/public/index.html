@@ -43,6 +43,13 @@
         <thead><tr><th scope="col">Booking</th><th scope="col">Passenger</th><th scope="col">Plate</th><th scope="col">Status</th></tr></thead>
         <tbody></tbody>
       </table>
+      <h3>Ask the agent</h3>
+      <form id="agent">
+        <label for="agent-text">What should tide-agent do for the crossing above?</label>
+        <textarea id="agent-text" name="text" rows="2" maxlength="500" required>Rebook its passengers onto the next crossing that day.</textarea>
+        <button type="submit">Ask the agent</button>
+        <p id="agent-result" role="status"></p>
+      </form>
       <h3>Support notes</h3>
       <form id="note">
         <label for="note-body">New note</label>

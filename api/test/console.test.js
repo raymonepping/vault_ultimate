@@ -4,7 +4,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { actToRun, noParameters, createLeaseList, createConfirmations, githubStale } from '../lib/console.js';
-import { createEvents, clean } from '../lib/events.js';
+import { createEvents, clean, scrub } from '../lib/events.js';
 import { createOidc } from '../lib/oidc.js';
 import { Refused } from '../lib/session.js';
 
@@ -81,4 +81,9 @@ test('OIDC: PKCE on the way out; a state is used once and expires', async () => 
   const s2 = new URL(o.start()).searchParams.get('state');
   t = 700_000;
   await assert.rejects(o.finish(s2, 'code-2'), (e) => e.status === 400);
+});
+
+test('scrub drops tokens, passwords, keys and values at any depth', () => {
+  const v = scrub({ a: { password: 'pw-synthetic', value: 'tidewell-demo', value_fp: 'abcd1234', list: [{ client_token: 't', ok: 1 }] }, secret_access_key: 's', private_key: 'k' });
+  assert.deepEqual(v, { a: { value_fp: 'abcd1234', list: [{ ok: 1 }] } });
 });

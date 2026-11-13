@@ -38,12 +38,17 @@ const spki = (pem: string) =>
   crypto.createHash('sha256').update(crypto.createPublicKey(pem).export({ type: 'spki', format: 'der' })).digest('base64');
 
 /**
- * Chromium flag that makes the browser trust exactly the console leaf's and
- * the lab CA's keys (the lab CA is in no browser trust store) instead of
+ * Chromium flag that makes the browser trust exactly the console leaf's, the
+ * lab CA's and Vault PKI's intermediate's keys (in no browser trust store) instead of
  * ignoring certificate errors.
  */
+// The booking site's certificate comes from Vault PKI: its issuing CA (the
+// intermediate the lab CA signed, ansible/pki-ca.yml) is pinned too, because
+// Chromium matches pins only on the chain it builds, which ends there.
+const VAULT_INT = path.join(ROOT, '.build/pki-ca/int.crt');
 export function labCaSpkiArg(): string {
-  return `--ignore-certificate-errors-spki-list=${spki(fs.readFileSync(LEAF, 'utf8'))},${spki(fs.readFileSync(LAB_CA, 'utf8'))}`;
+  const pins = [LEAF, LAB_CA, ...(fs.existsSync(VAULT_INT) ? [VAULT_INT] : [])].map((f) => spki(fs.readFileSync(f, 'utf8')));
+  return `--ignore-certificate-errors-spki-list=${pins.join(',')}`;
 }
 
 /** TLS to the console the strict way: hostname checked, chain verified against the lab CA only. */

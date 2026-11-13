@@ -43,9 +43,7 @@ services:
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     read_only: true
-    # The Vault image declares VOLUME /vault/logs and /vault/file: tmpfs
-    # there, or Podman makes two anonymous volumes on every recreate.
-    tmpfs: [/tmp, /vault/logs, /vault/file]
+    tmpfs: [/tmp]
     environment:
       PORT: "3000"
       HOME: /tmp

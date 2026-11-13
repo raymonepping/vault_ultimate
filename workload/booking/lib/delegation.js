@@ -41,13 +41,15 @@ export function claimsFor(who, action, crossing, now = Math.floor(Date.now() / 1
   };
 }
 
-async function vault(method, url, { token, body, timeoutMs = 8000 } = {}) {
+// cid: X-Correlation-Id, which Vault's audit log records beside the request;
+// the app logs the same id, so the two records join.
+async function vault(method, url, { token, body, cid, timeoutMs = 8000 } = {}) {
   const ac = new AbortController();
   const t = setTimeout(() => ac.abort(), timeoutMs); // referenced: AbortSignal.timeout was seen never to fire
   try {
     const r = await fetch(url, {
       method, signal: ac.signal,
-      headers: { ...(token ? { 'X-Vault-Token': token } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}) },
+      headers: { ...(token ? { 'X-Vault-Token': token } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}), ...(cid ? { 'X-Correlation-Id': cid } : {}) },
       body: body ? JSON.stringify(body) : undefined,
     });
     const json = await r.json().catch(() => null);
@@ -60,9 +62,10 @@ async function vault(method, url, { token, body, timeoutMs = 8000 } = {}) {
 
 const b64u = (s) => Buffer.from(s).toString('base64url');
 
-export async function issue(who, action, crossing) {
+export async function issue(who, action, crossing, cid) {
   const signing = `${b64u(JSON.stringify({ alg: 'ES256', typ: 'at+jwt', kid: 'obo-1' }))}.${b64u(JSON.stringify(claimsFor(who, action, crossing)))}`;
   const r = await vault('POST', `${PROXY}/v1/${NS}/transit/sign/obo`, {
+    cid,
     body: { input: Buffer.from(signing).toString('base64'), hash_algorithm: 'sha2-256', marshaling_algorithm: 'jws' },
   }).catch((e) => ({ ok: false, status: 503, errors: [`Vault Agent did not answer: ${e.message}`] }));
   if (!r.ok) throw Object.assign(new Error(`Vault did not sign the delegation: ${r.status} ${r.errors.join('; ')}`), { status: 502 });
@@ -80,8 +83,8 @@ export function check(token, now = Date.now() / 1000) {
   return { subject: c.sub, jti: c.jti, exp: c.exp, permits: (c.authorization_details || []).map((d) => d.path), token };
 }
 
-export async function authorize(p, action, crossing) {
-  const r = await vault('GET', `${VAULT}/v1/${NS}/${permitPath(action, crossing)}`, { token: p.token })
+export async function authorize(p, action, crossing, cid) {
+  const r = await vault('GET', `${VAULT}/v1/${NS}/${permitPath(action, crossing)}`, { token: p.token, cid })
     .catch((e) => ({ ok: false, status: 503, errors: [`Vault did not answer: ${e.message}`] }));
   return { ok: r.status === 200, answer: r.status === 200 ? `Vault 200: ${action} permit for ${crossing}` : `Vault ${r.status}: ${r.errors.join('; ') || 'refused'}` };
 }

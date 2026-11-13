@@ -9,14 +9,23 @@
 set -euo pipefail
 
 SECRETS=/run/secrets
-LDAP_ADMIN_PASSWORD="$(cat "$SECRETS/ldap-admin-password")"
+# Passwords go to the LDAP tools as files (-y, -T), never on a command line:
+# argv is readable by anyone who lists processes. Copies without a trailing
+# newline (the tools would send it as part of the password) live in a private
+# directory that goes when the script ends.
+PW=$(mktemp -d)
+chmod 700 "$PW"
+cleanup() { rm -f "$PW/admin" "$PW/new"; rmdir "$PW"; }
+trap cleanup EXIT
+strip() { tr -d '\n' <"$1" >"$PW/$2"; }
+strip "$SECRETS/ldap-admin-password" admin
 LDAP_HOST="${LDAP_HOST:-openldap}"
 BASE_DN="${LDAP_BASE_DN:-dc=tidewell,dc=lab}"
 BIND_DN="cn=admin,${BASE_DN}"
 LDIF="/bootstrap/bootstrap.ldif"
 
 for _ in $(seq 1 30); do
-  ldapsearch -x -H "ldap://${LDAP_HOST}" -D "$BIND_DN" -w "$LDAP_ADMIN_PASSWORD" -b "$BASE_DN" -s base >/dev/null 2>&1 && break
+  ldapsearch -x -H "ldap://${LDAP_HOST}" -D "$BIND_DN" -y "$PW/admin" -b "$BASE_DN" -s base >/dev/null 2>&1 && break
   sleep 2
 done
 
@@ -26,9 +35,9 @@ apply_entry() {
   local dn
   dn="$(printf '%s\n' "$1" | awk -F': ' '/^dn:/{print $2; exit}')"
   [ -z "$dn" ] && return 0
-  if ldapsearch -x -H "ldap://${LDAP_HOST}" -D "$BIND_DN" -w "$LDAP_ADMIN_PASSWORD" -b "$dn" -s base >/dev/null 2>&1; then
+  if ldapsearch -x -H "ldap://${LDAP_HOST}" -D "$BIND_DN" -y "$PW/admin" -b "$dn" -s base >/dev/null 2>&1; then
     skipped=$((skipped + 1))
-  elif printf '%s\n' "$1" | ldapadd -x -H "ldap://${LDAP_HOST}" -D "$BIND_DN" -w "$LDAP_ADMIN_PASSWORD" >/dev/null 2>&1; then
+  elif printf '%s\n' "$1" | ldapadd -x -H "ldap://${LDAP_HOST}" -D "$BIND_DN" -y "$PW/admin" >/dev/null 2>&1; then
     echo "  + added: $dn"
     added=$((added + 1))
     case "$dn" in cn=keycloak-bind,*) bind_created=1 ;; esac
@@ -47,7 +56,8 @@ echo "LDAP fixture: ${added} added, ${skipped} already present, ${failed} failed
 [ "$failed" -eq 0 ] || exit 1
 
 setpw() { # dn file
-  ldappasswd -x -H "ldap://${LDAP_HOST}" -D "$BIND_DN" -w "$LDAP_ADMIN_PASSWORD" -s "$(cat "$2")" "$1" >/dev/null 2>&1
+  strip "$2" new
+  ldappasswd -x -H "ldap://${LDAP_HOST}" -D "$BIND_DN" -y "$PW/admin" -T "$PW/new" "$1" >/dev/null 2>&1
 }
 set_count=0
 for file in "$SECRETS"/users/*; do

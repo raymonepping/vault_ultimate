@@ -1,5 +1,0 @@
-stage_ns: "{{ vult_cluster_addr }}/v1/{{ vult_namespace }}"
-stage_token: "{{ lookup('ansible.builtin.file', vult_tokens_dir + '/ansible-platform') }}"
-stage_destinations:
-  - { type: gh, name: tidewell-github }
-  - { type: aws-sm, name: tidewell-localstack }
