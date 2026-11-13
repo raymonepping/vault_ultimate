@@ -760,3 +760,33 @@ credential).
 - `make test-ui`: 29 passed (axe 0), the new booking-page step included.
 - After the round: act 0, the witness at the baseline (standing 6,
   unmanaged 6, longest never).
+
+## Prompt 99, round 2 (2026-11-13)
+
+Reviews on `71f1991` and the round's diff.
+
+### Findings and fixes
+
+20. The secret-scan gate knew vault_sync's secrets only: it loads this lab's
+    own too (`.secrets/workload`, `identity`, `data`): 26 known values (was
+    15), clean.
+21. "Rotate once" before act 1 created the deploy token in Vault with a value
+    CI never had, and act 1 then brought that home: refused with 409 until act
+    1 (`rotationAllowed`, tested).
+22. `make doctor` on a fresh lab reported Sync, the GitHub App and the
+    destinations as problems (act 1 makes them) with fixes that no longer
+    exist: checked from act 1 only, the fix named `make act-1`.
+23. `make backup` pointed at the removed `make seed`.
+24. An unknown key id refetched Keycloak's keys on every request: at most
+    once every 30 s (tested). `make backup` ran: two Raft snapshots and the
+    secrets archive, 0600, 1.5 MB.
+
+The `/ponytail:ponytail-review`, `/backend-design:audit` and
+`/backend-design:security-discipline` passes over the round's diff found
+nothing new (no new route, input or output).
+
+### Results
+
+- `make lint` green; api 60, booking 14 unit tests.
+- `make up` 35 s; `make verify` 91/0 (rehearsal 60/0); `make test-ui` 29/29;
+  the witness at the act 0 baseline.

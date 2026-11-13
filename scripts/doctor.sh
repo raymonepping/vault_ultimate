@@ -89,15 +89,21 @@ if [ "$up" -gt 0 ]; then
   voters=$(api .secrets/vault/tokens/ansible-platform sys/storage/raft/configuration | jq '[.data.config.servers[] | select(.voter)] | length')
   [ "${voters:-0}" = 3 ] && fine "three Raft voters" || fix "${voters:-0} Raft voters" "make vault-status; make up"
   ns=$(vult_conf VULT_NAMESPACE)
-  flags=$(api .secrets/vault/tokens/ansible-platform sys/activation-flags | jq -r '.data.activated // [] | join(" ")')
-  for f in secrets-sync secrets-import; do
-    [[ " $flags " == *" $f "* ]] && fine "$f activated" || fix "$f is not activated (every sys/sync call is 403)" "make github-app"
-  done
-  fp=$(api .secrets/vault/tokens/ansible-platform "$ns/sys/sync/github-apps/$(vult_conf VULT_GITHUB_APP_NAME)" | jq -r '.data.fingerprint // empty')
-  [ -n "$fp" ] && fine "the GitHub App is registered in $ns" || fix "the GitHub App is not registered" "make github-app"
-  for d in gh/tidewell-github aws-sm/tidewell-localstack; do
-    api .secrets/vault/tokens/ansible-platform "$ns/sys/sync/destinations/$d" >/dev/null && fine "destination $d" || fix "destination $d is missing" "make github-app destinations"
-  done
+  # Act 1 activates Sync and Import and registers the app and both
+  # destinations; before it, their absence is the before estate, not a fault.
+  if [ "$(cat "$BUILD_DIR/act" 2>/dev/null || echo 0)" -ge 1 ]; then
+    flags=$(api .secrets/vault/tokens/ansible-platform sys/activation-flags | jq -r '.data.activated // [] | join(" ")')
+    for f in secrets-sync secrets-import; do
+      [[ " $flags " == *" $f "* ]] && fine "$f activated" || fix "$f is not activated (every sys/sync call is 403)" "make stage-reset CONFIRM=yes, then make act-1"
+    done
+    fp=$(api .secrets/vault/tokens/ansible-platform "$ns/sys/sync/github-apps/$(vult_conf VULT_GITHUB_APP_NAME)" | jq -r '.data.fingerprint // empty')
+    [ -n "$fp" ] && fine "the GitHub App is registered in $ns" || fix "the GitHub App is not registered" "make stage-reset CONFIRM=yes, then make act-1"
+    for d in gh/tidewell-github aws-sm/tidewell-localstack; do
+      api .secrets/vault/tokens/ansible-platform "$ns/sys/sync/destinations/$d" >/dev/null && fine "destination $d" || fix "destination $d is missing" "make stage-reset CONFIRM=yes, then make act-1"
+    done
+  else
+    fine "act 0: Sync, the GitHub App and the destinations come with act 1"
+  fi
 fi
 
 echo "cloud"

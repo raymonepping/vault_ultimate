@@ -14,6 +14,9 @@ export function decode(jwt) {
 export function jwksVerifier({ jwksUrl, issuer, fetchImpl = fetch, now = () => Date.now() / 1000 }) {
   let cache = { at: 0, keys: [] };
   async function keys(force = false) {
+    // A forced refresh (an unknown kid) at most every 30 s: junk tokens must
+    // not turn every request into a call to Keycloak.
+    if (force && now() - cache.at < 30) return cache.keys;
     if (!force && now() - cache.at < 300 && cache.keys.length) return cache.keys;
     const ac = new AbortController();
     const t = setTimeout(() => ac.abort(), 5000);

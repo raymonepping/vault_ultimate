@@ -38,3 +38,15 @@ test('equalSecret compares in constant time and refuses empty values', () => {
   assert.equal(equalSecret('', ''), false);
   assert.equal(equalSecret('abc', undefined), false);
 });
+
+test('unknown key ids refresh the keys at most every 30 s, not per request', async () => {
+  let t = 5000;
+  let fetches = 0;
+  const counting = async () => { fetches += 1; return { ok: true, json: async () => ({ keys: [jwk] }) }; };
+  const w = jwksVerifier({ jwksUrl: 'https://kc/certs', issuer: 'https://kc/realms/t', fetchImpl: counting, now: () => t });
+  for (let i = 0; i < 20; i += 1) await assert.rejects(w(jwt({ iss: 'https://kc/realms/t', exp: 9000 }, `junk-${i}`)), /unknown signing key/);
+  assert.equal(fetches, 1, 'one fetch for twenty junk tokens');
+  t += 31;
+  await assert.rejects(w(jwt({ iss: 'https://kc/realms/t', exp: 9000 }, 'junk-x')), /unknown signing key/);
+  assert.equal(fetches, 2, 'a new key can still be found after 30 s');
+});

@@ -3,7 +3,7 @@
 // staleness; the event list cleans what it keeps; OIDC state is single use.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { actToRun, noParameters, createLeaseList, createConfirmations, githubStale } from '../lib/console.js';
+import { actToRun, noParameters, createLeaseList, createConfirmations, githubStale, rotationAllowed } from '../lib/console.js';
 import { createEvents, clean, scrub } from '../lib/events.js';
 import { createOidc } from '../lib/oidc.js';
 import { Refused } from '../lib/session.js';
@@ -86,4 +86,10 @@ test('OIDC: PKCE on the way out; a state is used once and expires', async () => 
 test('scrub drops tokens, passwords, keys and values at any depth', () => {
   const v = scrub({ a: { password: 'pw-synthetic', value: 'tidewell-demo', value_fp: 'abcd1234', list: [{ client_token: 't', ok: 1 }] }, secret_access_key: 's', private_key: 'k' });
   assert.deepEqual(v, { a: { value_fp: 'abcd1234', list: [{ ok: 1 }] } });
+});
+
+test('the deploy token is rotated only once act 1 brought it into Vault', () => {
+  assert.throws(() => rotationAllowed(0), (e) => e.status === 409 && /act 1/.test(e.message));
+  rotationAllowed(1);
+  rotationAllowed(6);
 });

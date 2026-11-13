@@ -28,7 +28,7 @@ import { createRate } from './lib/rate.js';
 import { createOidc } from './lib/oidc.js';
 import { createEvents } from './lib/events.js';
 import { createRunnerClient } from './lib/runner-client.js';
-import { actToRun, noParameters, createLeaseList, createConfirmations, githubStale } from './lib/console.js';
+import { actToRun, noParameters, createLeaseList, createConfirmations, githubStale, rotationAllowed } from './lib/console.js';
 import { createRedactor } from './lib/redact.js';
 
 const PORT = Number(process.env.PORT || 3000);
@@ -226,6 +226,9 @@ const routes = {
   'POST /api/rotate/deploy': async (req) => {
     const s = sessions.get(req);
     noParameters(await readBody(req));
+    // Before act 1 the token is not in Vault: a write here would create it
+    // with a new value, and act 1 would bring that home instead of CI's.
+    rotationAllowed(currentAct());
     limited(actionRate, 'actions');
     return exclusive('rotating the deploy token', async () => {
       const cid = randomUUID();

@@ -21,5 +21,5 @@ unset VAULT_TOKEN
 # Not .secrets/legacy (credentials of a cluster clean-slate removed) and not
 # Terraform's provider cache (a re-downloadable binary).
 tar -C "$VULT_ROOT" --exclude '.secrets/legacy' --exclude '*/.terraform' -czf "$dest/secrets.tgz" .secrets
-echo "backup: $dest (vault-s.snap, cluster.snap, secrets.tgz); LocalStack keeps no state to save (make seed rebuilds the legacy store)"
+echo "backup: $dest (vault-s.snap, cluster.snap, secrets.tgz); LocalStack keeps no state to save (make up puts the act's content back)"
 du -sh "$dest" | awk '{print "backup: " $1}'

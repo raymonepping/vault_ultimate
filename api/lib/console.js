@@ -35,6 +35,12 @@ export function createLeaseList({ ttlMs = 600_000, now = Date.now } = {}) {
   };
 }
 
+// The deploy token comes into Vault in act 1; rotating it before that would
+// create it with a value CI never had.
+export function rotationAllowed(act) {
+  if (act < 1) throw new Refused(409, 'the deploy token comes into Vault in act 1: run act 1 first');
+}
+
 // One-time confirmation for the stage reset: GET gives a token, POST spends it.
 export function createConfirmations({ ttlMs = 120_000, now = Date.now } = {}) {
   let current = null;

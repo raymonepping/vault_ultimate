@@ -18,6 +18,13 @@ add_file() { # <label> <file>
 for f in .secrets/vault/tokens/* .secrets/vault/seal/* .secrets/people/*; do
   [ -f "$f" ] && add_file "${f#.secrets/}" "$f"
 done
+# This lab's own: the before estate's (database password, deploy token, agent
+# key), the identity stack's (LDAP and Keycloak admins, the bind accounts, the
+# booking client secret, people) and PostgreSQL's admin password.
+for f in .secrets/workload/* .secrets/identity/* .secrets/identity/system/* .secrets/identity/users/* .secrets/data/*; do
+  case "$f" in *.env | *.pem) continue ;; esac # files that hold values already listed, or PEM (the pattern below)
+  [ -f "$f" ] && add_file "${f#.secrets/}" "$f"
+done
 # The GitHub App's private key: its base64 body (the PEM armour is not secret).
 for f in .secrets/github/*.pem; do
   [ -s "$f" ] && values["github-key"]=$(grep -v -- '-----' "$f" | tr -d '\n')
