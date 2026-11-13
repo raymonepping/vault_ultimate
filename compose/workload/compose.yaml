@@ -113,6 +113,8 @@ services:
     environment:
       HOME: /tmp
       VAULT_NAMESPACE: tidewell
+      # tls.hcl names the site's own address in its certificate.
+      BOOKING_IP: ${VULT_BOOKING_IP}
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     read_only: true

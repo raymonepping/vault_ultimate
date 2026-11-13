@@ -8,7 +8,7 @@ template {
   destination = "/vault/out/tls/key.pem"
   perms       = "0600"
   contents    = <<-EOT
-  {{ with secret "pki/issue/booking" "common_name=booking" "alt_names=localhost" "ip_sans=127.0.0.1,10.89.28.70" }}{{ .Data.private_key }}{{ end }}
+  {{ with secret "pki/issue/booking" "common_name=booking" "alt_names=localhost" (printf "ip_sans=127.0.0.1,%s" (env "BOOKING_IP")) }}{{ .Data.private_key }}{{ end }}
   EOT
 }
 
@@ -16,7 +16,7 @@ template {
   destination = "/vault/out/tls/cert.pem"
   perms       = "0600"
   contents    = <<-EOT
-  {{ with secret "pki/issue/booking" "common_name=booking" "alt_names=localhost" "ip_sans=127.0.0.1,10.89.28.70" }}{{ .Data.certificate }}
+  {{ with secret "pki/issue/booking" "common_name=booking" "alt_names=localhost" (printf "ip_sans=127.0.0.1,%s" (env "BOOKING_IP")) }}{{ .Data.certificate }}
   {{ .Data.issuing_ca }}{{ end }}
   EOT
 }

@@ -9,7 +9,7 @@ set -euo pipefail
 source "$(dirname -- "$0")/common.sh"
 cd "$VULT_ROOT"
 [ -s "$BUILD_DIR/act6/raw.json" ] || die "timeline: no drill records yet (make act-6)"
-podman run --rm --name vult-timeline --network vult-internal \
+podman run --rm --name "vult-timeline_$$" --network vult-internal \
   --read-only --cap-drop ALL --security-opt no-new-privileges \
   -e OLLAMA_MODEL="$(vult_conf VULT_OLLAMA_MODEL)" -e OLLAMA_TIMEOUT_MS="$(vult_conf VULT_OLLAMA_SUMMARY_TIMEOUT_MS)" \
   -v "$VULT_ROOT/api:/app:ro" -v "$BUILD_DIR/act6:/out" \

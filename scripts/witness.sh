@@ -26,7 +26,7 @@ note=$(podman exec vult-postgres gosu postgres psql -At -d tidewell -c \
   "select json_build_object('id', 'act0', 'note', id, 'credential', 'booking-db-password', 'posted_at', to_char(created_at at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')) from support_notes where author = 'teun' order by id limit 1" 2>/dev/null || true)
 jq -n --argjson act "$act" --argjson note "${note:-null}" '{act: $act, canaries: [$note | select(. != null)]}' >"$out/host-facts.json"
 
-podman run --rm --name vult-witness --network vult-internal \
+podman run --rm --name "vult-witness_$$" --network vult-internal \
   --read-only --cap-drop ALL --security-opt no-new-privileges \
   -e NODE_EXTRA_CA_CERTS=/ca/ca-chain.pem \
   -v "$VULT_ROOT/api:/app:ro" \

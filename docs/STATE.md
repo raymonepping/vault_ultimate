@@ -790,3 +790,26 @@ nothing new (no new route, input or output).
 - `make lint` green; api 60, booking 14 unit tests.
 - `make up` 35 s; `make verify` 91/0 (rehearsal 60/0); `make test-ui` 29/29;
   the witness at the act 0 baseline.
+
+## Prompt 99, round 3 (2026-11-13)
+
+Reviews on `864dc73`; this round read act 1's wave (written by an earlier
+session), the throwaway containers and the settings `.env` can override.
+
+### Findings and fixes
+
+25. Two witness runs at once (the console's, a terminal's) collided on the
+    container name `vult-witness`: each run is `vult-witness_<pid>` (and
+    `vult-timeline_<pid>`); two at once both succeed.
+26. The one-hour certificate named a fixed booking address: Agent reads
+    `BOOKING_IP` (from `VULT_BOOKING_IP`) in `tls.hcl`.
+
+Act 1's wave held: it reads before every write, never trusts Import's exit
+code alone, and hands the token on stdin. The review, audit and security
+passes over the round's diff found nothing new.
+
+### Results
+
+- `make lint` green; `make up` 22 s; `make verify` 91/0 (rehearsal 60/0,
+  act 3 through the new template); `make test-ui` 29/29; the witness at the
+  act 0 baseline.
