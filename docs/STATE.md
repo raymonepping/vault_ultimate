@@ -813,3 +813,25 @@ passes over the round's diff found nothing new.
 - `make lint` green; `make up` 22 s; `make verify` 91/0 (rehearsal 60/0,
   act 3 through the new template); `make test-ui` 29/29; the witness at the
   act 0 baseline.
+
+## Prompt 99, round 4 (2026-11-13)
+
+Reviews on `eb65a4b`; this round followed round 1's "no secret on a command
+line" into the Keycloak bootstrap.
+
+### Findings and fixes
+
+27. `setup_keycloak.sh` put the Keycloak admin password (`kcadm --password`),
+    the bind credential and the booking client secret (`-s ...=$(cat ...)`)
+    on command lines: the admin password goes through `KC_CLI_PASSWORD`, the
+    two values as JSON on stdin (`-f - -m`, built with the printf builtin).
+    The update path ran in place; the create path ran in a rebuild from
+    nothing.
+
+The review, audit and security passes over the round's diff found nothing new.
+
+### Results
+
+- From nothing: `make clean-slate` 43 s, `make lab` 234 s (every gate
+  green: boundary 66, secret scan 26 known values), `make verify` 91/0
+  (rehearsal 60/0), `make test-ui` 29/29, the witness at the act 0 baseline.

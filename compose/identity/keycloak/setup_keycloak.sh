@@ -26,12 +26,25 @@ AUDIENCE=tidewell-vault
 LDAP_BASE_DN="dc=tidewell,dc=lab"
 SECRETS=/run/secrets
 
-"$KC" config credentials --server "$KC_URL" --realm master --user admin \
-  --password "$(cat "$SECRETS/keycloak-admin-password")" >/dev/null 2>&1 || {
+# Secrets never go on a command line (anyone listing processes reads argv):
+# kcadm takes the admin password from KC_CLI_PASSWORD, and a secret value goes
+# as JSON on stdin (bind_credential, client_secret), built with the printf
+# builtin. The generated values are letters and digits: safe inside JSON.
+KC_CLI_PASSWORD="$(cat "$SECRETS/keycloak-admin-password")"
+export KC_CLI_PASSWORD
+bind_credential() { # <component id>: the before estate's bind password
+  printf '{"config": {"bindCredential": ["%s"]}}' "$(tr -d '\n' <"$SECRETS/system/keycloak-bind")" |
+    "$KC" update "components/$1" -r "$REALM" -f - -m >/dev/null
+}
+client_secret() { # <client uuid>: the before estate's client secret
+  printf '{"clientAuthenticatorType": "client-secret", "secret": "%s"}' "$(tr -d '\n' <"$SECRETS/booking-client-secret")" |
+    "$KC" update "clients/$1" -r "$REALM" -f - -m >/dev/null
+}
+
+"$KC" config credentials --server "$KC_URL" --realm master --user admin >/dev/null 2>&1 || {
   for _ in $(seq 1 40); do
     sleep 3
-    "$KC" config credentials --server "$KC_URL" --realm master --user admin \
-      --password "$(cat "$SECRETS/keycloak-admin-password")" >/dev/null 2>&1 && break
+    "$KC" config credentials --server "$KC_URL" --realm master --user admin >/dev/null 2>&1 && break
   done
 }
 
@@ -50,7 +63,7 @@ id=$(component_id tidewell-ldap)
 if [ -n "$id" ]; then
   echo "  = LDAP federation"
   if [ "${VULT_SET_KEYCLOAK_BIND:-0}" = 1 ]; then
-    "$KC" update "components/$id" -r "$REALM" -s "config.bindCredential=[\"$(cat "$SECRETS/system/keycloak-bind")\"]" >/dev/null
+    bind_credential "$id"
     echo "  * bind credential reset to the before estate's (stage-reset)"
   fi
 else
@@ -63,9 +76,9 @@ else
     -s 'config.connectionUrl=["ldap://openldap:389"]' \
     -s "config.usersDn=[\"ou=people,${LDAP_BASE_DN}\"]" \
     -s "config.bindDn=[\"cn=keycloak-bind,ou=system,${LDAP_BASE_DN}\"]" \
-    -s "config.bindCredential=[\"$(cat "$SECRETS/system/keycloak-bind")\"]" \
     -s 'config.editMode=["READ_ONLY"]' -s 'config.syncRegistrations=["false"]' \
     -s 'config.pagination=["true"]' -s 'config.importEnabled=["true"]' -s 'config.trustEmail=["true"]')
+  bind_credential "$id"
   echo "  + LDAP federation"
 fi
 if [ -z "$(component_id tidewell-groups)" ]; then
@@ -104,8 +117,7 @@ CLI=$(ensure_client tidewell-cli true "" true)
 # created and on a stage reset only (act 4 may replace client authentication,
 # probe question 7; a rerun must not undo it).
 if [ -f /tmp/new-client-tidewell-booking ] || [ "${VULT_SET_BOOKING_SECRET:-0}" = 1 ]; then
-  "$KC" update "clients/$BOOKING" -r "$REALM" -s clientAuthenticatorType=client-secret \
-    -s "secret=$(cat "$SECRETS/booking-client-secret")" >/dev/null
+  client_secret "$BOOKING"
   echo "  * booking client secret set from .secrets/identity (never printed)"
 fi
 
