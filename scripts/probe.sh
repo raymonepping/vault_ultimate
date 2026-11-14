@@ -241,7 +241,7 @@ if want Q3; then
   row P09 Q3 "unwrap once" "the secret id" "HTTP $ST" "$(yes_if '[ -n "$sid" ]')"
   api "$wrap" POST sys/wrapping/unwrap '{}'
   row P10 Q3 "unwrap the same wrapping token again" refused "HTTP $ST: $ERR" "$(yes_if '[[ "$ST" =~ ^4 ]]')"
-  login() { api - POST "${P}auth/approle/login" "$(jq -n --arg r "$role_id" --arg s "$sid" '{role_id: $r, secret_id: $s}')"; }
+  login() { api - POST "${P}auth/approle/login" "$(S="$sid" jq -n --arg r "$role_id" '{role_id: $r, secret_id: env.S}')"; }
   login
   # shellcheck disable=SC2034  # read by the yes_if string below, when it is evaluated
   apptok=$(jq -r '.auth.client_token // empty' <<<"$BODY")
@@ -300,10 +300,10 @@ if want Q5; then
   row P21z Q5 "Keycloak admin token (master realm, admin-cli)" token "$([ -n "$KAT" ] && echo token || echo "$KERR")" "$(yes_if '[ -n "$KAT" ]')"
   kcapi POST "" "$(jq -n --arg r "$REALM" '{realm: $r, enabled: true}')"
   row P21a Q5 "a scratch Keycloak realm" 201 "HTTP $KST $(jq -r '.errorMessage // .error // empty' <<<"$KBODY" 2>/dev/null)" "$(yes_if '[ "$KST" = 201 ]')"
-  kcomp=$(jq -n --arg b "$B" --arg pw "$p1" '{name: "probe-ldap", providerId: "ldap", providerType: "org.keycloak.storage.UserStorageProvider",
+  kcomp=$(PW="$p1" jq -n --arg b "$B" '{name: "probe-ldap", providerId: "ldap", providerType: "org.keycloak.storage.UserStorageProvider",
     config: {enabled: ["true"], vendor: ["other"], usernameLDAPAttribute: ["uid"], rdnLDAPAttribute: ["uid"], uuidLDAPAttribute: ["entryUUID"],
       userObjectClasses: ["inetOrgPerson"], connectionUrl: ["ldap://openldap:389"], usersDn: ["ou=people," + $b],
-      bindDn: ["cn=probe-bind,ou=system," + $b], bindCredential: [$pw], editMode: ["READ_ONLY"], authType: ["simple"]}}')
+      bindDn: ["cn=probe-bind,ou=system," + $b], bindCredential: [env.PW], editMode: ["READ_ONLY"], authType: ["simple"]}}')
   kcapi POST "/$REALM/components" "$kcomp"
   row P21b Q5 "a federation in it binding as probe-bind" 201 "HTTP $KST $(jq -r '.errorMessage // .error // empty' <<<"$KBODY" 2>/dev/null)" "$(yes_if '[ "$KST" = 201 ]')"
   kcapi GET "/$REALM/components?name=probe-ldap"
@@ -320,7 +320,7 @@ if want Q5; then
   row P23 Q5 "after rotate-role: Keycloak's stored (old) password" refused "HTTP $KST: $(jq -r '.errorMessage // .error // empty' <<<"$KBODY" 2>/dev/null)" "$(yes_if '[ "$KST" != 204 ]')"
   t0=$(date +%s)
   kcapi GET "/$REALM/components/$cid"
-  kcapi PUT "/$REALM/components/$cid" "$(jq --arg pw "$p2" '.config.bindCredential = [$pw]' <<<"$KBODY")"
+  kcapi PUT "/$REALM/components/$cid" "$(PW="$p2" jq '.config.bindCredential = [env.PW]' <<<"$KBODY")"
   ktest
   row P24 Q5 "push the new password into Keycloak (admin REST), then test" "204 within seconds" "HTTP $KST after $(($(date +%s) - t0))s" "$(yes_if '[ "$KST" = 204 ]')"
   unset p1 p2
@@ -348,7 +348,7 @@ path "identity/oidc/token/obo-*" { capabilities = ["read"] }'
   api "$T" POST "${P}auth/jwt/role/person" '{"role_type": "jwt", "user_claim": "preferred_username", "bound_audiences": ["tidewell-vault"], "groups_claim": "groups", "token_ttl": "5m", "token_max_ttl": "15m"}'
   api "$T" POST "${P}identity/entity-alias" "$(jq -n --arg c "$E_TEUN" --arg a "$JWT_ACC" '{name: "teun", canonical_id: $c, mount_accessor: $a}')"
   kt=$(person_jwt teun)
-  api - POST "${P}auth/jwt/login" "$(jq -n --arg j "$kt" '{role: "person", jwt: $j}')"
+  api - POST "${P}auth/jwt/login" "$(J="$kt" jq -n '{role: "person", jwt: env.J}')"
   TT=$(jq -r '.auth.client_token // empty' <<<"$BODY")
   row P26 Q6 "Teun's Keycloak token logs in to Vault as entity teun" "entity teun" "HTTP $ST; entity $( [ "$(jq -r '.auth.entity_id' <<<"$BODY")" = "$E_TEUN" ] && echo teun || echo other); policies $(jq -c '.auth.identity_policies // []' <<<"$BODY"); ttl $(jq -r '.auth.lease_duration' <<<"$BODY")s" "$(yes_if '[ -n "$TT" ]')"
   # Vault's identity OIDC mints the delegation token (ES256, act, RAR).
@@ -424,7 +424,7 @@ path "identity/oidc/token/obo-*" { capabilities = ["read"] }'
   api "$OBO2" GET "${P}kv/data/permits/cancel/day1-1100"
   row P33 Q6 "a cancel token for the agent (Teun allows, the ceiling does not)" "refused by the ceiling" "HTTP $ST: $ERR" "$(yes_if '[ "$ST" = 403 ]')"
   # Keycloak's own token exchange (the alternative issuer).
-  kx=$(jq -rn --arg s "$kt" '@uri "grant_type=urn:ietf:params:oauth:grant-type:token-exchange&client_id=tidewell-cli&subject_token=\($s)&subject_token_type=urn:ietf:params:oauth:token-type:access_token&requested_token_type=urn:ietf:params:oauth:token-type:access_token"' |
+  kx=$(S="$kt" jq -rn '@uri "grant_type=urn:ietf:params:oauth:grant-type:token-exchange&client_id=tidewell-cli&subject_token=\(env.S)&subject_token_type=urn:ietf:params:oauth:token-type:access_token&requested_token_type=urn:ietf:params:oauth:token-type:access_token"' |
     curl -sS --cacert "$VAULT_CACERT" "$KC/realms/tidewell/protocol/openid-connect/token" --data-binary @- | jq -c '{error, error_description, has_token: has("access_token")}')
   row P34 Q6 "Keycloak token exchange as the delegation issuer (public client)" recorded "$kx" yes
   [ "$OBO_ST" = 200 ] && note "Q6 answered: a delegation token works when the booking app signs it with a non-exportable Vault Transit key (typ at+jwt); no signing key exists outside Vault." || note "Q6: no delegation token authenticated; fall back to vault_identity's issuer key (a residual)."

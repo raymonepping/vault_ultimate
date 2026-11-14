@@ -871,3 +871,41 @@ middle of `make up` (945 s, the workload step paused) left the VM clock
 - `make lint` green (shellcheck 71 scripts); `make up` 32 s from an empty
   LocalStack; `make verify` 91/0 (rehearsal 60/0); `make test-ui` 29/29;
   the witness at the act 0 baseline (standing 6, copies 6, longest never).
+
+## Prompt 99, round 6 (2026-11-14)
+
+Reviews on `bd5a207`; this round checked round 5's fixes against Vault's
+own help (`generate-root` reads the key and `-decode` from stdin with `-`;
+`unseal` has no stdin form) and swept every `jq --arg` for a secret.
+
+### Findings and fixes
+
+31. A secret reached jq's command line through `--arg`: the unseal key in
+    round 5's own fix (`vault-unseal.sh`), a person's Keycloak access token
+    in `person_login` (`common.sh`), and in the probe an AppRole secret id,
+    two LDAP bind passwords and two Keycloak tokens. Each goes through jq's
+    environment instead (`K="$v" jq -n '{key: env.K}'`): a process's
+    environment is readable by its owner only, its argv by anyone listing
+    processes (the `KC_CLI_PASSWORD` model). Every other `--arg` carries a
+    name, a count or a date.
+
+### Results
+
+- `make lint` green; `make down` then `make up` 71 s (vault-s sealed, then
+  unsealed through the new body); `make verify` 91/0 (boundary and rehearsal
+  sign in through `person_login`); `make test-ui` 29/29; the witness at the
+  act 0 baseline.
+- Not run: `make probe`. Its 4h token (minted at bootstrap) had expired, and
+  minting another needs a root token, which the lab does only on the
+  operator's request. Its five changed filters were checked against the old
+  ones on a synthetic value (identical JSON).
+
+## Prompt 99, round 7 (2026-11-14)
+
+Reviews on round 6's diff, and a sweep for every other way a secret reaches
+a command line: curl `-u` or an inline auth header, a password in a
+connection string, `ldap* -w`, `vault login <token>`, `podman exec -e`,
+Ansible `command` and `shell` tasks, Node child processes. Only LocalStack's
+synthetic `test` key (D12) appears; the runner spawns allowlisted make
+targets with its token dropped from the environment (a runner test proves
+it). No findings: the clean loop ends here.

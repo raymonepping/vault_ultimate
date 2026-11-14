@@ -203,7 +203,8 @@ person_login() { # <user>: the way people sign in here (D14): Keycloak, then Vau
     return 1
   }
   unset kc
-  VAULT_TOKEN=$(jq -n --arg j "$at" '{role: "person", jwt: $j}' |
+  # The token reaches jq through its environment (owner-only), never its argv.
+  VAULT_TOKEN=$(J="$at" jq -n '{role: "person", jwt: env.J}' |
     curl -sf --cacert "$VAULT_CACERT" -H "X-Vault-Namespace: $ns" "$VAULT_ADDR/v1/auth/jwt/login" --data @- | jq -er '.auth.client_token') || {
     echo "person_login: Vault refused $user" >&2
     return 1
