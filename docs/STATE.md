@@ -835,3 +835,39 @@ The review, audit and security passes over the round's diff found nothing new.
 - From nothing: `make clean-slate` 43 s, `make lab` 234 s (every gate
   green: boundary 66, secret scan 26 known values), `make verify` 91/0
   (rehearsal 60/0), `make test-ui` 29/29, the witness at the act 0 baseline.
+
+## Prompt 99, round 5 (2026-11-14)
+
+Reviews on `8a2816c`; this round swept every script for the last values
+that still reached a command line.
+
+### Findings and fixes
+
+28. `root-regen.sh` passed the key share and the encoded token as
+    arguments to `vault operator generate-root`: both go on stdin (`-` and
+    `-decode=-`). Not run here: it makes a root token, which the lab only
+    does on the operator's request.
+29. `vault-unseal.sh` passed the unseal key as an argument (`vault operator
+    unseal` takes no stdin): the key goes in a JSON body on stdin to
+    `PUT sys/unseal` with curl (`--data-binary @-`); the endpoint needs no
+    token. Proved by a down and up: vault-s sealed, then unsealed.
+
+30. `make up` trusted a running LocalStack to hold its data, but LocalStack
+    keeps nothing across a restart. An `up` interrupted after it started
+    LocalStack (or a restart by podman) left it empty, and the next `up`
+    said "kept"; `make verify`'s idempotency gate caught it (before-estate
+    changed=2). `up.sh` now also asks what LocalStack holds (no act leaves
+    it empty) and refills it when it is empty; the query is one helper,
+    `localstack_names` in `common.sh`, shared with `doctor.sh`. Proved by a
+    restart to empty (0 secrets), then `make up` 32 s, the store refilled
+    (4).
+
+The probe and every other script were clean. Also seen: a Mac sleep in the
+middle of `make up` (945 s, the workload step paused) left the VM clock
+1637 s behind; `make clock-sync` fixed it.
+
+### Results
+
+- `make lint` green (shellcheck 71 scripts); `make up` 32 s from an empty
+  LocalStack; `make verify` 91/0 (rehearsal 60/0); `make test-ui` 29/29;
+  the witness at the act 0 baseline (standing 6, copies 6, longest never).

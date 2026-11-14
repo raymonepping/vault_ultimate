@@ -157,6 +157,16 @@ vcurl() {
   fi
 }
 
+# localstack_names: the secret names LocalStack holds, as a JSON list. It keeps
+# nothing across a restart, so "running" alone never says what it holds. The
+# key is LocalStack's synthetic `test` (it accepts any, D12).
+localstack_names() {
+  curl -s --cacert "$VULT_ROOT/vault-tls/ca-chain.pem" -X POST "https://localhost:$(vult_conf VULT_PORT_LOCALSTACK)/" \
+    -H 'X-Amz-Target: secretsmanager.ListSecrets' -H 'Content-Type: application/x-amz-json-1.1' \
+    -H "Authorization: AWS4-HMAC-SHA256 Credential=test/20260101/$(vult_conf VULT_AWS_REGION)/secretsmanager/aws4_request, SignedHeaders=host, Signature=0" \
+    --data '{"MaxResults":100}' | jq -c '[.SecretList[]?.Name]'
+}
+
 info() { printf '\033[32m%s\033[0m\n' "$*" >&2; }
 die() {
   printf '\033[31m%s\033[0m\n' "$*" >&2

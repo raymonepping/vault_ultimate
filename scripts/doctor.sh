@@ -110,10 +110,7 @@ echo "cloud"
 [ -n "$(vult_conf LOCALSTACK_AUTH_TOKEN)" ] || fix "LOCALSTACK_AUTH_TOKEN is empty in .env (LocalStack refuses to start)" "put your localstack.cloud auth token in .env"
 if running vult-localstack; then
   [ "$(podman inspect -f "{{.State.Health.Status}}" vult-localstack 2>/dev/null)" = healthy ] && fine "LocalStack healthy" || fix "LocalStack is not healthy" "podman logs vult-localstack"
-  n=$(curl -s --cacert vault-tls/ca-chain.pem -X POST "https://localhost:$(vult_conf VULT_PORT_LOCALSTACK)/" \
-    -H 'X-Amz-Target: secretsmanager.ListSecrets' -H 'Content-Type: application/x-amz-json-1.1' \
-    -H "Authorization: AWS4-HMAC-SHA256 Credential=test/20260101/$(vult_conf VULT_AWS_REGION)/secretsmanager/aws4_request, SignedHeaders=host, Signature=0" \
-    --data '{"MaxResults":100}' | jq --argjson want "$(jq '[.legacy[].aws_name]' config/story.json)" '[.SecretList[]?.Name] as $have | [$want[] | select(. as $n | $have | index($n))] | length')
+  n=$(localstack_names | jq --argjson want "$(jq '[.legacy[].aws_name]' config/story.json)" '. as $have | [$want[] | select(. as $n | $have | index($n))] | length')
   # Act 1 brings the legacy secrets home and retires the originals on purpose.
   want=$([ "$(cat "$BUILD_DIR/act" 2>/dev/null || echo 0)" = 0 ] && jq '.legacy | length' config/story.json || echo 0)
   [ "${n:-0}" = "$want" ] && fine "the legacy store holds $n secrets (act $(cat "$BUILD_DIR/act" 2>/dev/null || echo 0) expects $want)" || fix "the legacy store holds ${n:-0} secrets, act $(cat "$BUILD_DIR/act" 2>/dev/null || echo 0) expects $want" "make up (LocalStack keeps nothing across a restart)"

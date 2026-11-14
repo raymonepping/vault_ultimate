@@ -52,13 +52,15 @@ fi
 vault operator generate-root -cancel >/dev/null 2>&1 || true
 otp=$(vault operator generate-root -generate-otp)
 nonce=$(vault operator generate-root -init -otp="$otp" -format=json | jq -r '.nonce')
-encoded=$(vault operator generate-root -nonce="$nonce" -format=json "$key" | jq -r '.encoded_token')
+# The key share and the encoded token go on stdin ("-"), never on a command
+# line; the OTP alone decodes nothing.
+encoded=$(printf '%s' "$key" | vault operator generate-root -nonce="$nonce" -format=json - | jq -r '.encoded_token')
 unset key
 [ -n "$encoded" ] && [ "$encoded" != null ] || {
   echo "root-regen: generate-root did not complete" >&2
   exit 1
 }
-token=$(vault operator generate-root -decode="$encoded" -otp="$otp")
+token=$(printf '%s' "$encoded" | vault operator generate-root -decode=- -otp="$otp")
 unset otp encoded
 : >"$out"
 chmod 600 "$out"

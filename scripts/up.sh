@@ -69,6 +69,9 @@ for i in 0 1 2; do
 done
 step stacks "identity, data, ai and cloud up, in parallel"
 before=${befores[3]}
+# A running LocalStack can still be empty (restarted by podman, or started by
+# an up that stopped before it was filled); no act leaves it empty.
+[ "$before" != running ] || [ "$(localstack_names 2>/dev/null | jq length 2>/dev/null)" != 0 ] || before="running but empty"
 if [ "$before" = running ]; then
   step cloud "kept: localstack running"
 elif [ "$act" = 0 ]; then

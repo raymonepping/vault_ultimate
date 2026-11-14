@@ -30,7 +30,13 @@ unseal_key=$(jq -er '.unseal_keys_b64[0]' "$INIT_FILE") || {
   exit 1
 }
 echo "unseal: vault-s is sealed, unsealing"
-vault operator unseal "$unseal_key" >/dev/null
+# The key in a request body on stdin, never on a command line (the CLI's
+# unseal takes it as an argument or a prompt only). sys/unseal needs no token.
+jq -n --arg k "$unseal_key" '{key: $k}' |
+  curl -sf --cacert "$VAULT_CACERT" -X PUT "$VAULT_ADDR/v1/sys/unseal" --data-binary @- >/dev/null || {
+  echo "unseal: vault-s refused the key (make doctor)" >&2
+  exit 1
+}
 unset unseal_key
 if vault_json | jq -e '.sealed | not' >/dev/null; then
   echo "unseal: vault-s is unsealed"
